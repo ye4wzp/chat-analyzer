@@ -16,4 +16,14 @@ export default defineConfig({
       '/api': 'http://localhost:8000',
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/recharts')) return 'recharts'
+          if (id.match(/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler)\//)) return 'react'
+        },
+      },
+    },
+  },
 })
