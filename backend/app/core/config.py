@@ -37,6 +37,7 @@ class QQConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 40653
     token: str = ""
+    uin: str = ""  # logged-in QQ number, used by launcher to enable quick login
 
 
 class TelegramConfig(BaseModel):

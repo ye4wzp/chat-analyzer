@@ -32,6 +32,17 @@ ELEMENT_MARKERS = {
 ProgressCB = Callable[[int, str], Awaitable[None] | None]
 
 
+def _unwrap(payload: Any) -> Any:
+    """QCE v5 wraps responses as {success, data, timestamp, requestId}.
+    Strip the envelope so call sites work with the inner data shape."""
+    if isinstance(payload, dict) and "success" in payload and "data" in payload:
+        if not payload.get("success", True):
+            err = (payload.get("error") or {}).get("message") or "QCE 调用失败"
+            raise QCEError(err)
+        return payload["data"]
+    return payload
+
+
 class QCEError(RuntimeError):
     pass
 
@@ -56,12 +67,12 @@ class QCEClient:
     async def _get(self, path: str, **params: Any) -> Any:
         r = await self._client.get(path, params=params)
         r.raise_for_status()
-        return r.json()
+        return _unwrap(r.json())
 
     async def _post(self, path: str, body: dict) -> Any:
         r = await self._client.post(path, json=body)
         r.raise_for_status()
-        return r.json()
+        return _unwrap(r.json())
 
     async def system_info(self) -> dict:
         return await self._get("/api/system/info")

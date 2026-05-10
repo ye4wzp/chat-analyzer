@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import platform
 import re
@@ -35,9 +36,12 @@ log = logging.getLogger(__name__)
 STACK_DIR = Path.home() / ".chat-analyzer" / "qq-stack"
 PLUGINS_DIR = STACK_DIR / "plugins"
 CONFIG_DIR = STACK_DIR / "config"
-FRONTEND_DIR = STACK_DIR / "qce-v4-tool"
+QCE_DATA_DIR = STACK_DIR / "qce-data"
 COMPOSE_FILE = STACK_DIR / "docker-compose.yml"
 VERSION_FILE = STACK_DIR / ".installed-version"
+
+# QCE v5 release packs as a single npm-style plugin folder.
+QCE_PLUGIN_NAME = "napcat-plugin-qce"
 
 CONTAINER_NAME = "chat-analyzer-napcat"
 NAPCAT_WEBUI_PORT = 6099  # NapCat's own web login UI (QR code lives here)
@@ -46,9 +50,9 @@ QCE_PORT = 40653
 RELEASE_API = "https://api.github.com/repos/shuakami/qq-chat-exporter/releases/latest"
 NAPCAT_IMAGE = "mlikiowa/napcat-docker:latest"
 
-# Regex for QCE printing `Access Token: <token>` on startup. The exact format
-# may shift across versions so we match loosely.
+# Regex for QCE printing token on startup. v5 prints `[QCE] Token: <40-char>`.
 TOKEN_PATTERNS = [
+    re.compile(r"\[QCE\]\s*Token[:\s：=]+([A-Za-z0-9_\-]{16,})"),
     re.compile(r"(?:access[_\s-]?token|qce[_\s-]?token)[\s:：=]+([A-Za-z0-9_\-]{8,})", re.I),
     re.compile(r"Token[\s:：=]+([A-Za-z0-9_\-]{16,})"),
 ]
@@ -134,13 +138,15 @@ async def _download_to(url: str, dest: Path) -> None:
 
 
 def _write_compose() -> None:
+    cfg = load_config().qq
+    account = cfg.uin or "0"
     compose_yaml = f"""services:
   napcat:
     image: {NAPCAT_IMAGE}
     container_name: {CONTAINER_NAME}
     restart: unless-stopped
     environment:
-      - ACCOUNT=0
+      - ACCOUNT={account}
       - MODE=shell
       - WEBUI_PORT={NAPCAT_WEBUI_PORT}
     ports:
@@ -149,42 +155,38 @@ def _write_compose() -> None:
     volumes:
       - ./config:/app/napcat/config
       - ./plugins:/app/napcat/plugins
-      - ./qce-v4-tool:/app/napcat/static/qce-v4-tool
       - ./qq-data:/app/.config/QQ
+      - ./qce-data:/app/.qq-chat-exporter
 """
     COMPOSE_FILE.write_text(compose_yaml)
 
 
 def _write_plugins_json() -> None:
     (CONFIG_DIR / "plugins.json").write_text(
-        '{\n  "napcat-plugin-builtin": true,\n  "qq-chat-exporter": true\n}\n'
+        '{\n  "' + QCE_PLUGIN_NAME + '": true\n}\n'
     )
+
+
+def _ensure_qce_security_disable_ipwhitelist() -> None:
+    """QCE defaults disableIPWhitelist=false, which blocks access via Docker
+    port-forward (source IP becomes the bridge gateway). Pre-seed the file so
+    the toggle persists across container restarts via the qce-data bind mount."""
+    QCE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    sec_path = QCE_DATA_DIR / "security.json"
+    try:
+        data = json.loads(sec_path.read_text()) if sec_path.exists() else {}
+    except Exception:
+        data = {}
+    if data.get("disableIPWhitelist") is True:
+        return
+    data["disableIPWhitelist"] = True
+    sec_path.write_text(json.dumps(data, indent=2))
 
 
 def _extract_zip(zip_bytes: bytes, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         zf.extractall(dest)
-
-
-async def _copy_builtin_plugin_from_image() -> None:
-    """The napcat image ships a `napcat-plugin-builtin` which our bind-mount
-    would shadow. Copy it out once so both plugins coexist."""
-    dest = PLUGINS_DIR / "napcat-plugin-builtin"
-    if dest.exists():
-        return
-    # Pull image first (idempotent, cheap after first time)
-    await _run(["docker", "pull", NAPCAT_IMAGE], timeout=600)
-    # Create a temporary container to copy from
-    _, cid, _ = await _run(["docker", "create", NAPCAT_IMAGE], timeout=30)
-    container_id = cid.strip()
-    try:
-        await _run(
-            ["docker", "cp", f"{container_id}:/app/napcat/plugins/napcat-plugin-builtin", str(dest)],
-            timeout=60,
-        )
-    finally:
-        await _run(["docker", "rm", container_id], check=False, timeout=30)
 
 
 async def ensure_installed(force: bool = False) -> dict[str, Any]:
@@ -199,50 +201,36 @@ async def ensure_installed(force: bool = False) -> dict[str, Any]:
     already = installed == version and not force
 
     if not already:
-        # 1. Plugin bundle → plugins/qq-chat-exporter/ + static/qce-v4-tool/
+        # QCE v5 ships the plugin as a single npm package directory.
+        # The zip's root contains package.json + index.mjs + node_modules + webui.
         plugin_asset = _find_asset(release, "napcat-plugin-qce.zip")
         async with httpx.AsyncClient(timeout=600, follow_redirects=True) as client:
             r = await client.get(plugin_asset["browser_download_url"])
             r.raise_for_status()
             plugin_zip = r.content
 
-        # Clean stale install
-        if (PLUGINS_DIR / "qq-chat-exporter").exists():
-            shutil.rmtree(PLUGINS_DIR / "qq-chat-exporter")
-        if FRONTEND_DIR.exists():
-            shutil.rmtree(FRONTEND_DIR)
+        plugin_dest = PLUGINS_DIR / QCE_PLUGIN_NAME
+        if plugin_dest.exists():
+            shutil.rmtree(plugin_dest)
 
-        # Layout inside the zip: either rooted or nested under a folder.
-        # We detect by scanning top-level entries.
         with zipfile.ZipFile(io.BytesIO(plugin_zip)) as zf:
-            names = zf.namelist()
-            roots = {n.split("/", 1)[0] for n in names if n}
-            # Extract directly; downstream code expects these paths
             tmp = STACK_DIR / ".plugin-extract"
             if tmp.exists():
                 shutil.rmtree(tmp)
             zf.extractall(tmp)
 
-        # Locate qq-chat-exporter and qce-v4-tool anywhere in the extracted tree
-        plugin_src = _find_dir(tmp, "qq-chat-exporter")
-        frontend_src = _find_dir(tmp, "qce-v4-tool")
+        # The zip may be rooted (package.json at top) or wrapped in one folder.
+        plugin_src = _find_plugin_root(tmp)
         if not plugin_src:
-            raise LauncherError("插件包中未找到 qq-chat-exporter 目录")
-        shutil.move(str(plugin_src), PLUGINS_DIR / "qq-chat-exporter")
-        if frontend_src:
-            shutil.move(str(frontend_src), FRONTEND_DIR)
-        else:
-            FRONTEND_DIR.mkdir(parents=True, exist_ok=True)  # placeholder mount
+            raise LauncherError("插件包结构异常：找不到 package.json")
+        shutil.move(str(plugin_src), plugin_dest)
 
         shutil.rmtree(tmp, ignore_errors=True)
-        _ = roots  # keep for debug
 
-    # 2. builtin plugin copy (independent of version; checks exist internally)
-    await _copy_builtin_plugin_from_image()
-
-    # 3. compose + plugin config (always rewritten; cheap, keeps in sync)
+    # compose + plugin config (always rewritten; cheap, keeps in sync)
     _write_compose()
     _write_plugins_json()
+    _ensure_qce_security_disable_ipwhitelist()
     VERSION_FILE.write_text(version)
 
     return {
@@ -252,10 +240,19 @@ async def ensure_installed(force: bool = False) -> dict[str, Any]:
     }
 
 
-def _find_dir(root: Path, name: str) -> Path | None:
-    for p in root.rglob(name):
-        if p.is_dir():
-            return p
+def _find_plugin_root(root: Path) -> Path | None:
+    """Locate the directory containing the plugin's package.json."""
+    for pkg in root.rglob("package.json"):
+        try:
+            import json
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if data.get("name") == QCE_PLUGIN_NAME:
+            return pkg.parent
+    # Fallback: zip rooted directly with package.json at top.
+    if (root / "package.json").exists():
+        return root
     return None
 
 
