@@ -1,10 +1,15 @@
 import asyncio
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import aiosqlite
 import httpx
+
+# Cached system local tz so we can pin naive timestamps to a consistent offset.
+# Naive ISO strings come from wx-cli (no tz tag) so we treat them as local time;
+# Telegram strings are already aware; QQ stores raw Unix epoch as digits.
+_LOCAL_TZ = datetime.now().astimezone().tzinfo or timezone.utc
 
 from app.core.config import load_config
 from app.core.database import DB_PATH
@@ -111,12 +116,33 @@ def split_into_windows(messages: list[dict]) -> list[list[dict]]:
 
 
 def _parse_ts(ts_str: str) -> datetime | None:
-    if not ts_str:
+    """Always return tz-aware datetime so cross-platform deltas don't crash.
+
+    Three formats coexist in the messages table:
+      - ISO with tz   (Telegram: '...+08:00')   → aware as-is
+      - ISO without tz (WeChat: '2026-04-10T17:07:07') → assume local tz
+      - Unix epoch as digits (QQ: '1769758739') → UTC
+    """
+    if ts_str is None:
         return None
+    s = str(ts_str).strip()
+    if not s:
+        return None
+    if s.isdigit():
+        try:
+            ts = int(s)
+            if ts > 10**12:  # millisecond epoch
+                ts //= 1000
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     try:
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_LOCAL_TZ)
+    return dt
 
 
 def _format_window(window: list[dict]) -> str:
