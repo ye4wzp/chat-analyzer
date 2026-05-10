@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { useSearchParams } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
 import { fetchAPI, getErrorMessage, type Config, type SchedulerStatus } from "@/lib/api"
 import { Input } from "@/components/ui/input"
@@ -158,6 +158,9 @@ export default function Settings() {
             <div className="flex items-center gap-2 text-sm text-[var(--color-muted-foreground)]">
               筛选模式：<Badge variant="secondary">{config.chat_filter.mode}</Badge>
               <span>({config.chat_filter.chats.length} 个聊天)</span>
+              <Link to="/chats" className="text-xs text-[var(--color-info)] hover:underline ml-auto">
+                在「聊天」页编辑 →
+              </Link>
             </div>
             <Button onClick={saveGeneral} disabled={saving}>
               {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}保存
