@@ -11,6 +11,7 @@ from app.api import (
     chats,
     config,
     dashboard,
+    inbox,
     knowledge,
     messages,
     qq,
@@ -54,7 +55,7 @@ app.add_middleware(
 
 for module in (
     dashboard, messages, chats, search, config,
-    sync, qq, telegram, tasks, analyze, knowledge, scheduler, backups,
+    sync, qq, telegram, tasks, analyze, knowledge, scheduler, backups, inbox,
 ):
     app.include_router(module.router)
 

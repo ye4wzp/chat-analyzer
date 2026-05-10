@@ -86,6 +86,7 @@ export interface Config {
   daily_token_budget: number
   budget_action: string
   vip_contacts: string[]
+  keywords?: string[]
   chat_filter: {
     mode: string
     chats: string[]

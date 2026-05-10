@@ -88,6 +88,38 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 
 CREATE INDEX IF NOT EXISTS idx_usage_ts ON llm_usage(timestamp);
 
+-- LLM-generated chat summary cache. Per (platform, chat_id) — keyed not on
+-- chat_name because names can change. Regenerate on demand from the API; the
+-- generated_at field lets the UI show "stale > 7d" warnings.
+CREATE TABLE IF NOT EXISTS chat_profiles (
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    summary TEXT,
+    summary_generated_at DATETIME,
+    PRIMARY KEY (platform, chat_id)
+);
+
+-- Keyword triggers — every (keyword, message) match is one row. UNIQUE
+-- prevents the rescan loop from creating duplicates. read=0 means unread; the
+-- bell-icon badge in Layout polls COUNT(read=0).
+CREATE TABLE IF NOT EXISTS keyword_triggers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    keyword TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    matched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    read INTEGER DEFAULT 0,
+    UNIQUE(keyword, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_trigger_unread ON keyword_triggers(read, matched_at);
+
+-- Per-keyword high-water-mark. Scans only walk messages with id > last so
+-- enabling a new keyword does an initial backfill but subsequent passes are O(new).
+CREATE TABLE IF NOT EXISTS keyword_scan_state (
+    keyword TEXT PRIMARY KEY,
+    last_scanned_message_id INTEGER DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_knowledge_batch ON knowledge_items(batch_id);
 """
 

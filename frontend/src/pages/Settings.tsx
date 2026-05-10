@@ -26,6 +26,7 @@ export default function Settings() {
   const [budget, setBudget] = useState("")
   const [action, setAction] = useState("")
   const [vip, setVip] = useState("")
+  const [keywords, setKeywords] = useState("")
   const [llmProvider, setLlmProvider] = useState("claude_cli")
   const [llmUrl, setLlmUrl] = useState("http://127.0.0.1:1234/v1")
   const [llmModel, setLlmModel] = useState("")
@@ -50,6 +51,7 @@ export default function Settings() {
         setBudget(String(c.daily_token_budget))
         setAction(c.budget_action)
         setVip(c.vip_contacts.join(", "))
+        setKeywords((c.keywords || []).join(", "))
         setLlmProvider(c.llm.provider)
         setLlmUrl(c.llm.api_url)
         setLlmModel(c.llm.model)
@@ -86,6 +88,7 @@ export default function Settings() {
           daily_token_budget: Number(budget),
           budget_action: action,
           vip_contacts: vip.split(",").map(s => s.trim()).filter(Boolean),
+          keywords: keywords.split(",").map(s => s.trim()).filter(Boolean),
           llm_provider: llmProvider,
           llm_api_url: llmUrl,
           llm_model: llmModel,
@@ -159,6 +162,12 @@ export default function Settings() {
             <div className="space-y-1.5">
               <label className="text-sm text-[var(--color-muted-foreground)]">VIP 联系人（逗号分隔）</label>
               <Input value={vip} onChange={e => setVip(e.target.value)} className="max-w-sm" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-[var(--color-muted-foreground)]">
+                关键词（逗号分隔）—— 命中后会进收件箱、可选系统通知
+              </label>
+              <Input value={keywords} onChange={e => setKeywords(e.target.value)} className="max-w-sm" placeholder="项目, deadline, 紧急" />
             </div>
             <div className="flex items-center gap-2 text-sm text-[var(--color-muted-foreground)]">
               筛选模式：<Badge variant="secondary">{config.chat_filter.mode}</Badge>

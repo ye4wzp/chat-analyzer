@@ -9,6 +9,16 @@ from app.core.tasks import _pending_results, _tasks, make_progress
 from app.models.analyze import AnalyzeRequest
 
 
+async def _post_sync_scan() -> None:
+    """Run keyword trigger scan after a successful sync. Best-effort — any
+    failure here must not surface as a sync failure since data already landed."""
+    try:
+        from app.services.triggers import scan_for_matches
+        await scan_for_matches()
+    except Exception:
+        pass
+
+
 async def run_sync(task_id: str, new_only: bool):
     from app.services.sync.wechat import sync_new_messages, sync_sessions
     from app.services.backup import maybe_backup_before_sync
@@ -20,6 +30,7 @@ async def run_sync(task_id: str, new_only: bool):
     try:
         await maybe_backup_before_sync()  # throttled 5min, swallows failures
         count = await (sync_new_messages() if new_only else sync_sessions())
+        await _post_sync_scan()
         _tasks[task_id].update(status="done", progress=100, message=f"同步完成，新增 {count} 条消息")
     except Exception as e:
         _tasks[task_id].update(status="error", progress=0, message=str(e))
@@ -55,6 +66,7 @@ async def run_qq_sync(task_id: str):
     try:
         await maybe_backup_before_sync()
         result = await sync_all(progress=make_progress(task_id))
+        await _post_sync_scan()
         _tasks[task_id].update(
             status="done", progress=100,
             message=f"同步完成: {result['imported']} 条消息 ({result['chats']} 个聊天)",
@@ -72,6 +84,7 @@ async def run_telegram_sync(task_id: str):
     try:
         await maybe_backup_before_sync()
         result = await sync_all(progress=make_progress(task_id))
+        await _post_sync_scan()
         _tasks[task_id].update(
             status="done", progress=100,
             message=f"同步完成: {result['imported']} 条消息 ({result['chats']} 个对话)",

@@ -66,6 +66,12 @@ async def update_config(body: ConfigUpdate):
         cfg.qq.token = body.qq_token
     if body.telegram_enabled is not None:
         cfg.telegram.enabled = body.telegram_enabled
+    if body.add_keyword and body.add_keyword not in cfg.keywords:
+        cfg.keywords.append(body.add_keyword)
+    if body.remove_keyword and body.remove_keyword in cfg.keywords:
+        cfg.keywords.remove(body.remove_keyword)
+    if body.keywords is not None:
+        cfg.keywords = body.keywords
 
     save_config(cfg)
     return _redact(cfg.model_dump())

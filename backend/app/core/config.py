@@ -70,6 +70,7 @@ class Config(BaseModel):
     daily_token_budget: int = 200_000
     budget_action: str = "pause_and_notify"
     vip_contacts: list[str] = []
+    keywords: list[str] = []  # case-sensitive substring matches; new keywords backfill on next scan
     chat_filter: ChatFilterConfig = ChatFilterConfig()
     pre_filter: PreFilterConfig = PreFilterConfig()
     llm: LLMConfig = LLMConfig()

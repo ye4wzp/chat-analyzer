@@ -23,3 +23,6 @@ class ConfigUpdate(BaseModel):
     qq_port: Optional[int] = None
     qq_token: Optional[str] = None  # "********" means keep current
     telegram_enabled: Optional[bool] = None  # session_string is set by login flow only
+    add_keyword: Optional[str] = None
+    remove_keyword: Optional[str] = None
+    keywords: Optional[list[str]] = None

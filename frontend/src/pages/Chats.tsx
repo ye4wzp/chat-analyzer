@@ -9,7 +9,8 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetHeader } from "@/components/ui/sheet"
-import { Search, Loader2, Menu, Star } from "lucide-react"
+import { Search, Loader2, Menu, Star, BarChart3 } from "lucide-react"
+import { ChatProfileSheet } from "@/components/ChatProfileSheet"
 import { PLATFORM_COLOR, PLATFORM_LABEL, PAGE_SIZE } from "@/lib/constants"
 
 function MessageDetail({ m }: { m: Message }) {
@@ -151,6 +152,7 @@ export default function Chats() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [filterMode, setFilterMode] = useState("whitelist")
   const [filterChats, setFilterChats] = useState<Set<string>>(new Set())
+  const [profileOpen, setProfileOpen] = useState(false)
   const msgOffsetRef = useRef(0)
 
   useEffect(() => {
@@ -310,12 +312,24 @@ export default function Chats() {
           </div>
         ) : (
           <>
-            <div className="px-4 md:px-6 py-4 border-b border-[var(--color-border)] shrink-0">
-              <h2 className="text-base font-semibold">{selectedChat.chat_name}</h2>
-              <p className="text-xs text-[var(--color-muted-foreground)] mt-0.5">
-                {selectedChat.msg_count.toLocaleString()} 条消息 · {PLATFORM_LABEL[selectedChat.platform] || selectedChat.platform}
-                {selectedChat.chat_type === "group" && " · 群聊"}
-              </p>
+            <div className="px-4 md:px-6 py-4 border-b border-[var(--color-border)] shrink-0 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold truncate">{selectedChat.chat_name}</h2>
+                <p className="text-xs text-[var(--color-muted-foreground)] mt-0.5">
+                  {selectedChat.msg_count.toLocaleString()} 条消息 · {PLATFORM_LABEL[selectedChat.platform] || selectedChat.platform}
+                  {selectedChat.chat_type === "group" && " · 群聊"}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setProfileOpen(true)}
+                title="查看聊天画像（活跃度/发言人/AI 总结）"
+                className="shrink-0"
+              >
+                <BarChart3 className="mr-1.5 h-3.5 w-3.5" />
+                画像
+              </Button>
             </div>
             <div className="flex-1 overflow-y-auto">
               {loadingMsgs && messages.length === 0 ? (
@@ -362,6 +376,15 @@ export default function Chats() {
         <div className="fixed bottom-6 right-6 rounded-lg border border-[var(--color-destructive)]/30 bg-[var(--color-card)] px-4 py-3 text-sm text-[var(--color-destructive)]">
           {error}
         </div>
+      )}
+
+      {selectedChat && (
+        <ChatProfileSheet
+          open={profileOpen}
+          platform={selectedChat.platform}
+          chatId={selectedChat.chat_id}
+          onClose={() => setProfileOpen(false)}
+        />
       )}
     </div>
   )
