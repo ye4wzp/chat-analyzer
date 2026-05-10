@@ -1,0 +1,19 @@
+[project]
+name = "chat-analyzer"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "httpx>=0.28",
+    "aiosqlite>=0.21",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "click>=8.1",
+    "rich>=13.9",
+    "pytest>=8.0",
+    "telethon>=1.43.2",
+]
+
+[project.scripts]
+chat-analyzer = "app.cli:main"

@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+@theme {
+  /* Surface */
+  --color-background: #0c0d0e;
+  --color-foreground: #ececec;
+  --color-card: #18191b;
+  --color-card-foreground: #ececec;
+  --color-card-elevated: #1f2123;
+  --color-popover: #1f2123;
+  --color-popover-foreground: #ececec;
+  --color-sidebar: #131416;
+
+  /* Brand: emerald */
+  --color-primary: #10b981;
+  --color-primary-foreground: #04140d;
+  --color-primary-soft: #064e3b;
+
+  /* Tonal layers */
+  --color-secondary: #232628;
+  --color-secondary-foreground: #ececec;
+  --color-muted: #1d1f21;
+  --color-muted-foreground: #8a8a8a;
+  --color-accent: #232628;
+  --color-accent-foreground: #ececec;
+  --color-border: #2a2c2f;
+  --color-input: #2a2c2f;
+  --color-ring: #10b981;
+
+  /* Status */
+  --color-success: #10b981;
+  --color-success-foreground: #04140d;
+  --color-warning: #f59e0b;
+  --color-warning-foreground: #271700;
+  --color-info: #38bdf8;
+  --color-info-foreground: #001a26;
+  --color-destructive: #ef4444;
+  --color-destructive-foreground: #ffffff;
+
+  /* Platform accents — used in JS via PLATFORM_COLOR */
+  --color-platform-wechat: #22c55e;
+  --color-platform-qq: #38bdf8;
+  --color-platform-telegram: #818cf8;
+
+  --radius: 0.5rem;
+}
+
+* {
+  border-color: var(--color-border);
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Number-heavy elements pick up the system mono — sharper for KPIs / timestamps. */
+.tabular-nums { font-variant-numeric: tabular-nums; }
+.font-mono { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2f3134; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #3f4144; }
+
+/* Subtle global focus ring on keyboard nav */
+:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+button:focus-visible, a:focus-visible, [role="button"]:focus-visible {
+  outline-offset: 2px;
+}
+
+/* Indeterminate progress sweep used by GlobalTaskBar */
+@keyframes ca-progress-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.ca-progress-sweep {
+  animation: ca-progress-sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* BottomSheet / Sheet slide-in */
+@keyframes ca-slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes ca-slide-down { from { transform: translateY(0); } to { transform: translateY(100%); } }
+@keyframes ca-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.ca-slide-up { animation: ca-slide-up 0.22s ease-out; }
+.ca-fade-in { animation: ca-fade-in 0.2s ease-out; }
