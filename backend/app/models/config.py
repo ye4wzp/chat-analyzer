@@ -17,6 +17,7 @@ class ConfigUpdate(BaseModel):
     llm_api_url: Optional[str] = None
     llm_model: Optional[str] = None
     llm_api_key: Optional[str] = None
+    llm_embedding_model: Optional[str] = None
     qq_enabled: Optional[bool] = None
     qq_host: Optional[str] = None
     qq_port: Optional[int] = None

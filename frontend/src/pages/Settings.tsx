@@ -30,6 +30,7 @@ export default function Settings() {
   const [llmUrl, setLlmUrl] = useState("http://127.0.0.1:1234/v1")
   const [llmModel, setLlmModel] = useState("")
   const [llmApiKey, setLlmApiKey] = useState("lm-studio")
+  const [llmEmbeddingModel, setLlmEmbeddingModel] = useState("")
   const [scheduler, setScheduler] = useState<SchedulerStatus | null>(null)
   const [syncEnabled, setSyncEnabled] = useState(false)
   const [syncInterval, setSyncInterval] = useState(60)
@@ -53,6 +54,7 @@ export default function Settings() {
         setLlmUrl(c.llm.api_url)
         setLlmModel(c.llm.model)
         setLlmApiKey(c.llm.api_key)
+        setLlmEmbeddingModel(c.llm.embedding_model || "")
       })
       .catch(e => setError(getErrorMessage(e)))
     fetchAPI<SchedulerStatus>("/scheduler")
@@ -88,6 +90,7 @@ export default function Settings() {
           llm_api_url: llmUrl,
           llm_model: llmModel,
           llm_api_key: llmApiKey === "********" ? undefined : llmApiKey,
+          llm_embedding_model: llmEmbeddingModel,
         }),
       })
       setConfig(updated)
@@ -172,8 +175,8 @@ export default function Settings() {
 
         <TabsContent value="model">
           <LLMTab
-            provider={llmProvider} url={llmUrl} model={llmModel} apiKey={llmApiKey}
-            setProvider={setLlmProvider} setUrl={setLlmUrl} setModel={setLlmModel} setApiKey={setLlmApiKey}
+            provider={llmProvider} url={llmUrl} model={llmModel} apiKey={llmApiKey} embeddingModel={llmEmbeddingModel}
+            setProvider={setLlmProvider} setUrl={setLlmUrl} setModel={setLlmModel} setApiKey={setLlmApiKey} setEmbeddingModel={setLlmEmbeddingModel}
             onError={setError}
           />
           <Button className="mt-4" onClick={saveGeneral} disabled={saving}>

@@ -11,14 +11,16 @@ interface Props {
   url: string
   model: string
   apiKey: string
+  embeddingModel: string
   setProvider: (v: string) => void
   setUrl: (v: string) => void
   setModel: (v: string) => void
   setApiKey: (v: string) => void
+  setEmbeddingModel: (v: string) => void
   onError: (msg: string) => void
 }
 
-export function LLMTab({ provider, url, model, apiKey, setProvider, setUrl, setModel, setApiKey, onError }: Props) {
+export function LLMTab({ provider, url, model, apiKey, embeddingModel, setProvider, setUrl, setModel, setApiKey, setEmbeddingModel, onError }: Props) {
   const [models, setModels] = useState<string[]>([])
   const [testResult, setTestResult] = useState<"idle" | "ok" | "fail">("idle")
 
@@ -87,6 +89,23 @@ export function LLMTab({ provider, url, model, apiKey, setProvider, setUrl, setM
               {models.length === 0 && (
                 <Input className="mt-2" value={model} onChange={(e) => setModel(e.target.value)} placeholder="或手动输入模型名" />
               )}
+            </div>
+            <div className="max-w-md space-y-1">
+              <label className="text-xs text-muted-foreground">
+                Embedding 模型（用于语义搜索 / 关联推荐，留空则禁用）
+              </label>
+              <Select value={embeddingModel} onChange={(e) => setEmbeddingModel(e.target.value)}>
+                <option value="">（不使用）</option>
+                {/* Filter for likely embedding models — most providers tag them. */}
+                {models.filter(m => /embed|nomic|bge|e5|gte/i.test(m)).map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+                {/* Fallback: also let user pick any model name in case our filter misses */}
+                {!models.filter(m => /embed|nomic|bge|e5|gte/i.test(m)).includes(embeddingModel) && embeddingModel && (
+                  <option value={embeddingModel}>{embeddingModel}</option>
+                )}
+              </Select>
+              <Input className="mt-2" value={embeddingModel} onChange={(e) => setEmbeddingModel(e.target.value)} placeholder="或手动输入，如 text-embedding-nomic-embed-text-v1.5" />
             </div>
             <div className="flex items-center gap-3">
               <Button variant="outline" size="sm" onClick={testConnection}>测试连接</Button>

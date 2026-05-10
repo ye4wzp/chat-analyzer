@@ -80,6 +80,25 @@ async def run_telegram_sync(task_id: str):
         _tasks[task_id].update(status="error", progress=0, message=str(e))
 
 
+async def run_embed_knowledge(task_id: str):
+    """Embed all knowledge items missing a vector. Pure index job — no DB writes
+    outside the embedding column."""
+    from app.services.embedder import embed_all_knowledge
+    _tasks[task_id]["status"] = "running"
+    _tasks[task_id]["message"] = "准备 embedding..."
+    _tasks[task_id]["progress"] = 0
+    try:
+        result = await embed_all_knowledge(progress=make_progress(task_id))
+        _tasks[task_id].update(
+            status="done", progress=100,
+            message=(f"embed 完成: {result['embedded']} 条" if result['total']
+                     else "无待 embed 的知识点"),
+            **result,
+        )
+    except Exception as e:
+        _tasks[task_id].update(status="error", progress=0, message=str(e))
+
+
 async def run_qq_install(task_id: str, force: bool):
     from app.services.sync.qq_launcher import LauncherError, ensure_installed
     _tasks[task_id].update(status="running", progress=5, message="拉取 QCE release 信息...")

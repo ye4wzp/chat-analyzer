@@ -138,3 +138,12 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
     await db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_message ON analysis_results(message_id)"
     )
+
+    # knowledge_items.embedding: BLOB holding numpy float32 array, populated by
+    # services/embedder.py. NULL = not yet indexed.
+    knowledge_columns = await db.execute_fetchall("PRAGMA table_info(knowledge_items)")
+    if "embedding" not in {row[1] for row in knowledge_columns}:
+        await db.execute("ALTER TABLE knowledge_items ADD COLUMN embedding BLOB")
+    if "embedding_model" not in {row[1] for row in knowledge_columns}:
+        # Track which model produced the vector — re-embed on model change.
+        await db.execute("ALTER TABLE knowledge_items ADD COLUMN embedding_model TEXT")

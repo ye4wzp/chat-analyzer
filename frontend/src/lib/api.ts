@@ -95,6 +95,7 @@ export interface Config {
     api_url: string
     model: string
     api_key: string
+    embedding_model?: string
   }
   qq: QQConfig
   telegram: TelegramConfig
@@ -143,6 +144,7 @@ export interface KnowledgeItem {
   extended_content?: string
   batch_id: string
   created_at: string
+  similarity?: number  // present only on semantic search results
 }
 
 export interface PendingKnowledge {

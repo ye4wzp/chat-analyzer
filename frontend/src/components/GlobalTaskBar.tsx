@@ -13,6 +13,7 @@ const TASK_LABEL: Record<string, string> = {
   import_telegram: "Telegram 导入",
   analyze: "AI 分析",
   qq_install: "QQ 启动器安装",
+  embed: "Embedding 索引",
 }
 
 function StatusIcon({ status }: { status: string }) {

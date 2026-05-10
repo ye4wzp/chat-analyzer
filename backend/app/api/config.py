@@ -54,6 +54,8 @@ async def update_config(body: ConfigUpdate):
         cfg.llm.model = body.llm_model
     if body.llm_api_key is not None and body.llm_api_key != "********":
         cfg.llm.api_key = body.llm_api_key
+    if body.llm_embedding_model is not None:
+        cfg.llm.embedding_model = body.llm_embedding_model
     if body.qq_enabled is not None:
         cfg.qq.enabled = body.qq_enabled
     if body.qq_host is not None:

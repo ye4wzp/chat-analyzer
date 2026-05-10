@@ -29,6 +29,7 @@ class LLMConfig(BaseModel):
     api_url: str = "http://localhost:1234/v1"
     model: str = ""
     api_key: str = "lm-studio"
+    embedding_model: str = ""                # "" disables semantic features; otherwise OpenAI-compat /v1/embeddings model id
 
 
 class QQConfig(BaseModel):
