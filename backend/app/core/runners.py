@@ -169,9 +169,21 @@ async def run_analyze(task_id: str, req: AnalyzeRequest):
         knowledge_items, summary = await svc.analyze_messages(messages, on_progress=on_progress)
         _pending_results[task_id] = knowledge_items
 
+        # If 0 items came back AND all LLM calls failed, surface the LLM error
+        # rather than the misleading "提取到 0 个知识点".
+        if not knowledge_items and svc.llm_fail_count and svc.llm_fail_count == svc.llm_call_count:
+            _tasks[task_id].update(
+                status="error", progress=0,
+                message=f"LLM 调用全部失败：{svc.last_llm_error or '未知错误'}",
+            )
+            return
+
+        msg = f"提取到 {len(knowledge_items)} 个知识点，请筛选后保存"
+        if svc.llm_fail_count:
+            msg += f"（{svc.llm_fail_count}/{svc.llm_call_count} 次 LLM 调用失败：{svc.last_llm_error}）"
         _tasks[task_id].update(
             status="done", progress=100,
-            message=f"提取到 {len(knowledge_items)} 个知识点，请筛选后保存",
+            message=msg,
             result_count=len(knowledge_items),
             summary=summary,
         )

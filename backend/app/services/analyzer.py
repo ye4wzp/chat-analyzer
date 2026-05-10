@@ -1,10 +1,22 @@
 import asyncio
 import json
+import logging
+import sys
 import uuid
 from datetime import datetime, timezone
 
 import aiosqlite
 import httpx
+
+# Route analyzer logs through stderr at INFO so they show up under uvicorn's
+# default logging config. Helpful for debugging "why did I get 0 items?".
+logger = logging.getLogger("app.analyzer")
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("[analyzer] %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
 # Cached system local tz so we can pin naive timestamps to a consistent offset.
 # Naive ISO strings come from wx-cli (no tz tag) so we treat them as local time;
@@ -16,8 +28,9 @@ from app.core.database import DB_PATH
 from app.services.pre_filter import filter_messages
 
 WINDOW_GAP_SECONDS = 1800  # 30 min
-MAX_WINDOW_SIZE = 100
+MAX_WINDOW_SIZE = 40
 OVERLAP_SIZE = 5
+MAX_MSG_CONTENT_CHARS = 300  # cap per-message content so one long forward doesn't blow the prompt
 
 CLASSIFY_PROMPT = """从以下对话中提取有价值的知识点，忽略闲聊、水词、表情、问候等无实质内容的消息。
 
@@ -151,6 +164,8 @@ def _format_window(window: list[dict]) -> str:
     for i, msg in enumerate(window):
         sender = msg.get("sender_name") or msg.get("sender_id") or "Unknown"
         content = msg.get("content", "")
+        if len(content) > MAX_MSG_CONTENT_CHARS:
+            content = content[:MAX_MSG_CONTENT_CHARS] + "...(截断)"
         ts = msg.get("timestamp", "")
         lines.append(f"[{i}] [{ts}] {sender}: {content}")
     return "\n".join(lines)
@@ -165,6 +180,9 @@ class AnalyzerService:
         self.cfg = load_config()
         self.tokens_used_today = 0
         self._today = datetime.now().date()
+        self.last_llm_error: str | None = None
+        self.llm_call_count = 0
+        self.llm_fail_count = 0
 
     def _check_budget(self, estimated_tokens: int) -> None:
         today = datetime.now().date()
@@ -200,9 +218,11 @@ class AnalyzerService:
         return stdout.decode().strip()
 
     async def _call_openai(self, prompt: str, llm) -> str | None:
+        self.llm_call_count += 1
         try:
             api_url = llm.api_url.replace("localhost", "127.0.0.1")
-            async with httpx.AsyncClient(timeout=120) as client:
+            # 600s — local CPU inference on long prompts can exceed 2 min easily.
+            async with httpx.AsyncClient(timeout=600) as client:
                 resp = await client.post(
                     f"{api_url}/chat/completions",
                     headers={"Authorization": f"Bearer {llm.api_key}"},
@@ -212,13 +232,26 @@ class AnalyzerService:
                         "temperature": 0.3,
                     },
                 )
-                resp.raise_for_status()
+                if resp.status_code != 200:
+                    self.llm_fail_count += 1
+                    body = resp.text[:300]
+                    self.last_llm_error = f"HTTP {resp.status_code}: {body}"
+                    logger.warning(
+                        "LLM %s returned %d: %s (prompt len=%d)",
+                        llm.model, resp.status_code, body, len(prompt),
+                    )
+                    return None
                 return resp.json()["choices"][0]["message"]["content"].strip()
-        except Exception:
+        except Exception as e:
+            self.llm_fail_count += 1
+            err_msg = str(e) or type(e).__name__
+            self.last_llm_error = err_msg
+            logger.warning("LLM call failed: %s", err_msg)
             return None
 
     def _parse_llm_response(self, raw: str | None, window_size: int) -> list[dict]:
         if not raw:
+            logger.info("LLM returned empty/None response")
             return []
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -233,7 +266,8 @@ class AnalyzerService:
             raw = raw[: end + 1]
         try:
             return json.loads(raw)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            logger.warning("LLM JSON parse failed: %s; raw[:200]=%s", e, raw[:200])
             return []
 
     async def extract_knowledge(self, window: list[dict]) -> list[dict]:
@@ -257,12 +291,17 @@ class AnalyzerService:
         return await self._call_llm(prompt) or ""
 
     async def analyze_messages(self, messages: list[dict], on_progress=None) -> tuple[list[dict], str]:
-        """Extract knowledge items from messages. Returns (knowledge_items, summary)."""
-        passed, _ = filter_messages(messages)
+        """Extract knowledge items from messages. Returns (knowledge_items, summary).
+
+        Sets self.last_llm_error to the most recent LLM failure message (if any),
+        so callers can surface "LLM 报错" instead of a misleading "0 知识点"."""
+        passed, noise = filter_messages(messages)
         batch_id = uuid.uuid4().hex[:8]
         all_items = []
         windows = split_into_windows(passed)
         total = len(windows)
+        logger.info("in=%d passed=%d noise=%d windows=%d", len(messages), len(passed), len(noise), total)
+        self.last_llm_error = None
 
         for i, window in enumerate(windows):
             if on_progress and total > 0:
@@ -270,21 +309,26 @@ class AnalyzerService:
                 on_progress(pct, f"分析窗口 {i+1}/{total}...")
             try:
                 items = await self.extract_knowledge(window)
+                logger.info("window %d/%d size=%d -> %d items", i+1, total, len(window), len(items))
                 for item in items:
                     item["batch_id"] = batch_id
                     item["source_chat"] = window[0].get("chat_name", "") if window else ""
                 all_items.extend(items)
             except TokenBudgetExceeded:
+                logger.warning("token budget exceeded at window %d/%d", i+1, total)
+                self.last_llm_error = "Daily token budget exceeded"
                 break
 
         summary = await self._summarize(messages)
+        logger.info("done: %d items total, %d/%d llm fails", len(all_items), self.llm_fail_count, self.llm_call_count)
         return all_items, summary
 
     async def _summarize(self, messages: list[dict]) -> str:
         """Generate an overall summary of the messages."""
         if not messages:
             return ""
-        text = _format_window(messages[:80])  # limit to avoid token overflow
+        # Cap at 30 most-recent so the summary prompt fits even on small (4k) contexts.
+        text = _format_window(messages[:30])
         prompt = SUMMARY_PROMPT.format(messages=text)
         self._check_budget(len(text) // 3 + 300)
         raw = await self._call_llm(prompt)
