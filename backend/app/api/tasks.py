@@ -4,7 +4,7 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.core.tasks import _tasks, cancel_task
+from app.core.tasks import _tasks, cancel_task, list_tasks as _list_tasks
 
 router = APIRouter()
 
@@ -12,7 +12,7 @@ router = APIRouter()
 @router.get("/api/tasks")
 async def list_tasks():
     """All in-memory tasks. Used by the global task bar in the UI."""
-    return [{"id": tid, **t} for tid, t in _tasks.items()]
+    return _list_tasks()
 
 
 @router.post("/api/tasks/{task_id}/cancel")
@@ -31,8 +31,8 @@ async def task_events(task_id: str):
     async def event_stream():
         while True:
             if task_id in _tasks:
-                data = json.dumps(_tasks[task_id])
-                yield f"data: {data}\n\n"
+                public = {k: v for k, v in _tasks[task_id].items() if not k.startswith("_")}
+                yield f"data: {json.dumps(public)}\n\n"
                 if _tasks[task_id]["status"] in ("done", "error", "cancelled"):
                     break
             await asyncio.sleep(0.5)

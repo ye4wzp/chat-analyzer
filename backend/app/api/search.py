@@ -36,7 +36,7 @@ async def search(
 
     where = " AND ".join(conditions)
 
-    async with aiosqlite.connect(str(database.DB_PATH)) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
             f"""SELECT m.*, a.category, a.urgency, a.summary

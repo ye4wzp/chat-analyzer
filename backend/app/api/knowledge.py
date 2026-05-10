@@ -15,7 +15,7 @@ router = APIRouter()
 async def extend_knowledge(item_id: int):
     from app.services.analyzer import AnalyzerService
 
-    async with aiosqlite.connect(str(database.DB_PATH)) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall("SELECT * FROM knowledge_items WHERE id=?", (item_id,))
         if not rows:
@@ -25,7 +25,7 @@ async def extend_knowledge(item_id: int):
     svc = AnalyzerService()
     extended = await svc.extend_knowledge(item)
 
-    async with aiosqlite.connect(str(database.DB_PATH)) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
         await db.execute("UPDATE knowledge_items SET extended_content=? WHERE id=?", (extended, item_id))
         await db.commit()
 
@@ -34,7 +34,7 @@ async def extend_knowledge(item_id: int):
 
 @router.get("/api/knowledge")
 async def list_knowledge(q: Optional[str] = None, limit: int = 50, offset: int = 0):
-    async with aiosqlite.connect(str(database.DB_PATH)) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
         db.row_factory = aiosqlite.Row
         if q:
             rows = await db.execute_fetchall(
@@ -52,7 +52,7 @@ async def list_knowledge(q: Optional[str] = None, limit: int = 50, offset: int =
 
 @router.delete("/api/knowledge/{item_id}")
 async def delete_knowledge(item_id: int):
-    async with aiosqlite.connect(str(database.DB_PATH)) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
         await db.execute("DELETE FROM knowledge_items WHERE id=?", (item_id,))
         await db.commit()
     return {"ok": True}
@@ -70,7 +70,7 @@ async def update_knowledge(item_id: int, body: KnowledgeUpdateRequest):
     if not updates:
         raise HTTPException(400, "No fields to update")
     set_clause = ", ".join(f"{k}=?" for k in updates)
-    async with aiosqlite.connect(str(database.DB_PATH)) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
         await db.execute(f"UPDATE knowledge_items SET {set_clause} WHERE id=?", [*updates.values(), item_id])
         await db.commit()
     return {"ok": True}
@@ -78,7 +78,7 @@ async def update_knowledge(item_id: int, body: KnowledgeUpdateRequest):
 
 @router.get("/api/knowledge/export")
 async def export_knowledge(fmt: str = "markdown"):
-    async with aiosqlite.connect(str(database.DB_PATH)) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall("SELECT * FROM knowledge_items ORDER BY created_at DESC")
     items = [dict(r) for r in rows]

@@ -197,7 +197,7 @@ async def sync_all(progress: ProgressCB | None = None) -> dict[str, int]:
     total_imported = 0
     chats_done = 0
 
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
         for i, dialog in enumerate(dialogs):
             chat_id = str(dialog.id)
             chat_type, chat_name = _chat_kind(dialog.entity)
@@ -268,7 +268,9 @@ async def sync_all(progress: ProgressCB | None = None) -> dict[str, int]:
                 await update_sync_state(
                     db, platform="telegram", chat_id=chat_id, last_msg_id=str(max_seen)
                 )
-                await db.commit()
+            # Always commit per-chat — releases the WAL writer lock for any
+            # parallel wechat/qq sync rather than holding it for the whole run.
+            await db.commit()
             chats_done += 1
 
     await _emit(100, f"完成，新增 {total_imported} 条消息（{chats_done} 个对话）")

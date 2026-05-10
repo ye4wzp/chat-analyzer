@@ -103,7 +103,7 @@ async def run_analyze(task_id: str, req: AnalyzeRequest):
 
         chat_names = req.chats or ([req.chat] if req.chat else None)
 
-        async with aiosqlite.connect(str(database.DB_PATH)) as db:
+        async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
             db.row_factory = aiosqlite.Row
 
             conditions: list[str] = []

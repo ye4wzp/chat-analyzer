@@ -81,7 +81,7 @@ async def _import_chats(chats: list[dict]) -> dict:
     total = 0
     imported = 0
 
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
         for chat in chats:
             chat_id = str(chat["chat_id"])
             chat_name = str(chat["chat_name"])
@@ -133,7 +133,9 @@ async def _import_chats(chats: list[dict]) -> dict:
                     (chat_id, last_ts),
                 )
 
-        await db.commit()
+            # Commit per chat so concurrent syncs (e.g. /sync/all) don't sit
+            # behind a long-held WAL writer lock.
+            await db.commit()
 
     return {"total": total, "imported": imported, "chats": len(chats)}
 

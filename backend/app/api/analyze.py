@@ -34,7 +34,7 @@ async def confirm_analysis(task_id: str, body: ConfirmRequest):
     save_indices = set(body.ids)
     to_save = [r for i, r in enumerate(results) if i in save_indices]
 
-    async with aiosqlite.connect(str(database.DB_PATH)) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
         await save_knowledge_items(db, to_save)
         await db.commit()
 

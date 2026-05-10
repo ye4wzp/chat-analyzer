@@ -8,7 +8,7 @@ router = APIRouter()
 
 @router.get("/api/chats")
 async def get_chats():
-    async with aiosqlite.connect(str(database.DB_PATH)) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
             """SELECT platform, chat_id, chat_name, chat_type,

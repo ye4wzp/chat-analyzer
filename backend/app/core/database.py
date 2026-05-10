@@ -78,14 +78,14 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_batch ON knowledge_items(batch_id);
 
 
 async def get_db() -> aiosqlite.Connection:
-    db = await aiosqlite.connect(str(DB_PATH))
+    db = await aiosqlite.connect(str(DB_PATH), timeout=30)
     db.row_factory = aiosqlite.Row
     return db
 
 
 async def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
         # WAL lets concurrent syncs (wechat + qq + telegram) write without
         # tripping over each other's locks. Set once; persists in the file.
         await db.execute("PRAGMA journal_mode=WAL")

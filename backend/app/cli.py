@@ -103,7 +103,7 @@ def list_chats():
     from app.core.database import DB_PATH
 
     async def _run():
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
             db.row_factory = aiosqlite.Row
             rows = await db.execute_fetchall(
                 """SELECT platform, chat_id, chat_name, chat_type,
@@ -171,7 +171,7 @@ def analyze(chat: str | None, since: str | None, until: str | None, limit: int):
         svc = AnalyzerService()
         cfg = load_config()
 
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
             db.row_factory = aiosqlite.Row
 
             conditions = []
@@ -232,7 +232,7 @@ def analyze(chat: str | None, since: str | None, until: str | None, limit: int):
 
         if knowledge_items:
             from app.services.knowledge import save_knowledge_items
-            async with aiosqlite.connect(str(DB_PATH)) as db:
+            async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
                 await save_knowledge_items(db, knowledge_items)
                 await db.commit()
 
@@ -282,7 +282,7 @@ def search(keyword: str, platform: str | None, category: str | None, since: str 
     from app.core.database import DB_PATH
 
     async def _run():
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
             db.row_factory = aiosqlite.Row
 
             conditions = ["m.content LIKE ?"]

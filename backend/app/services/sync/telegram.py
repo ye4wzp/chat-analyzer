@@ -38,7 +38,7 @@ async def _import_full_export(chat_list: list[dict]) -> dict:
     total_imported = 0
     total_raw = 0
 
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
         for chat in chat_list:
             chat_name = chat.get("name", "")
             chat_id = str(chat.get("id", f"tg_{chat_name}"))

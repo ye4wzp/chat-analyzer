@@ -53,7 +53,7 @@ async def sync_sessions() -> int:
     ensure_dirs()
     total = 0
 
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
         for session in sessions:
             chat_name = session.get("chat") or session.get("name") or session.get("nickname") or ""
             chat_id = session.get("username") or session.get("chat_id") or ""
@@ -64,8 +64,9 @@ async def sync_sessions() -> int:
             # Pull messages for this session
             count = await _sync_chat_history(db, chat_id, chat_name)
             total += count
-
-        await db.commit()
+            # Commit per chat so a long history sync doesn't hold the WAL
+            # writer lock against parallel QQ/Telegram syncs.
+            await db.commit()
 
     return total
 
@@ -162,7 +163,7 @@ async def sync_new_messages() -> int:
     ensure_dirs()
     inserted = 0
 
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
         for msg in messages:
             ts = _parse_ts(msg.get("timestamp") or msg.get("time") or msg.get("created_at"))
             chat_id = msg.get("username") or msg.get("chat_id") or ""

@@ -22,13 +22,21 @@ const TASK_TITLE: Record<string, string> = {
   "/analyze": "AI 分析",
 }
 
+// Maps the runTask endpoint to the backend task type used in /api/tasks payloads.
+// Keeps the per-endpoint lock semantically aligned with the server's notion of "running".
+const ENDPOINT_TASK_TYPE: Record<string, string> = {
+  "/sync/wechat": "sync_wechat",
+  "/analyze": "analyze",
+}
+
 function Inner() {
   const { content, close } = useDetailPanel()
   const navigate = useNavigate()
   const [pendingKnowledge, setPendingKnowledge] = useState<PendingKnowledge[] | null>(null)
   const [pendingTaskId, setPendingTaskId] = useState("")
   const [pendingSummary, setPendingSummary] = useState("")
-  const [taskRunning, setTaskRunning] = useState(false)
+  // Per-type lock: a running wechat sync no longer blocks an analyze trigger.
+  const [runningTypes, setRunningTypes] = useState<Set<string>>(new Set())
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
   const esRef = useRef<EventSource | null>(null)
@@ -56,8 +64,12 @@ function Inner() {
   }
 
   const runTask = async (endpoint: string, body?: Record<string, string>) => {
-    if (taskRunning) return
-    setTaskRunning(true)
+    const taskType = ENDPOINT_TASK_TYPE[endpoint] ?? endpoint
+    if (runningTypes.has(taskType)) return
+    setRunningTypes(prev => new Set(prev).add(taskType))
+    const release = () => setRunningTypes(prev => {
+      const next = new Set(prev); next.delete(taskType); return next
+    })
     const title = TASK_TITLE[endpoint] || "任务"
     const toastId = toast.loading(`${title}启动中...`)
     try {
@@ -79,19 +91,23 @@ function Inner() {
             } catch { /* ignore */ }
           }
           toast.success(data.message || "完成", { id: toastId })
-          setTaskRunning(false)
+          release()
         } else if (data.status === "error") {
           esRef.current?.close()
           toast.error(data.message || "失败", { id: toastId })
-          setTaskRunning(false)
+          release()
+        } else if (data.status === "cancelled") {
+          esRef.current?.close()
+          toast.info(data.message || "已取消", { id: toastId })
+          release()
         }
       }, () => {
         toast.dismiss(toastId)
-        setTaskRunning(false)
+        release()
       })
     } catch (e: unknown) {
       toast.error(getErrorMessage(e), { id: toastId })
-      setTaskRunning(false)
+      release()
     }
   }
 
@@ -157,7 +173,7 @@ function Inner() {
           </button>
           <button
             onClick={() => { void runTask("/analyze") }}
-            disabled={taskRunning}
+            disabled={runningTypes.has("analyze")}
             className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors text-left text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)] hover:text-[var(--color-foreground)] disabled:opacity-50 disabled:pointer-events-none"
           >
             <Sparkles className="h-3.5 w-3.5 shrink-0" />
