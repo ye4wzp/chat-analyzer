@@ -5,6 +5,7 @@ authed REST API. We hit it with httpx and shape results into our `messages` tabl
 """
 
 import asyncio
+import logging
 from typing import Any, Awaitable, Callable
 
 import aiosqlite
@@ -48,15 +49,33 @@ class QCEError(RuntimeError):
 
 
 class QCEClient:
-    def __init__(self, cfg: QQConfig, timeout: float = 30.0):
+    def __init__(self, cfg: QQConfig, timeout: float = 120.0):
         if not cfg.token:
             raise QCEError("QCE token 未配置")
+        self.cfg = cfg
+        self.timeout = timeout
         self.base = f"http://{cfg.host}:{cfg.port}"
-        self._client = httpx.AsyncClient(
+        self._client = self._new_client()
+
+    def _new_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
             base_url=self.base,
-            headers={"Authorization": f"Bearer {cfg.token}"},
-            timeout=timeout,
+            headers={"Authorization": f"Bearer {self.cfg.token}"},
+            timeout=self.timeout,
+            # QCE silently closes idle keepalive sockets; reuse triggers
+            # RemoteProtocolError. Disable the keepalive pool entirely.
+            limits=httpx.Limits(max_keepalive_connections=0, max_connections=10),
         )
+
+    async def reconnect(self) -> None:
+        """Close the current connection pool and start a fresh one. Call this
+        after an unexpected disconnect to avoid the dead pool poisoning later
+        requests."""
+        try:
+            await self._client.aclose()
+        except Exception:
+            pass
+        self._client = self._new_client()
 
     async def __aenter__(self) -> "QCEClient":
         return self
@@ -65,14 +84,28 @@ class QCEClient:
         await self._client.aclose()
 
     async def _get(self, path: str, **params: Any) -> Any:
-        r = await self._client.get(path, params=params)
-        r.raise_for_status()
-        return _unwrap(r.json())
+        for attempt in range(3):
+            try:
+                r = await self._client.get(path, params=params)
+                r.raise_for_status()
+                return _unwrap(r.json())
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as e:
+                if attempt == 2:
+                    raise
+                logging.debug("QCE GET %s retry %d after %s", path, attempt + 1, e)
+                await self.reconnect()
 
     async def _post(self, path: str, body: dict) -> Any:
-        r = await self._client.post(path, json=body)
-        r.raise_for_status()
-        return _unwrap(r.json())
+        for attempt in range(3):
+            try:
+                r = await self._client.post(path, json=body)
+                r.raise_for_status()
+                return _unwrap(r.json())
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as e:
+                if attempt == 2:
+                    raise
+                logging.debug("QCE POST %s retry %d after %s", path, attempt + 1, e)
+                await self.reconnect()
 
     async def system_info(self) -> dict:
         return await self._get("/api/system/info")
@@ -211,13 +244,14 @@ async def sync_all(progress: ProgressCB | None = None) -> dict:
 
     total = 0
     chats_done = 0
+    skipped: list[str] = []
     async with QCEClient(cfg) as q:
         await _emit(10, "正在拉取群和好友列表...")
         groups, friends = await asyncio.gather(q.groups(), q.friends())
         targets: list[tuple[str, dict]] = [("group", g) for g in groups] + [("friend", f) for f in friends]
         if not targets:
             await _emit(100, "无聊天可同步")
-            return {"chats": 0, "imported": 0}
+            return {"chats": 0, "imported": 0, "skipped": []}
 
         async with aiosqlite.connect(str(DB_PATH)) as db:
             for i, (kind, peer) in enumerate(targets):
@@ -227,9 +261,17 @@ async def sync_all(progress: ProgressCB | None = None) -> dict:
                 try:
                     total += await sync_one_chat(db, q, kind=kind, peer=peer)
                     chats_done += 1
-                except httpx.HTTPError:
+                except httpx.HTTPError as e:
+                    skipped.append(f"{name} ({type(e).__name__})")
+                    logging.warning("QCE sync skipped %s %s: %s", kind, name, e)
+                    # The connection pool may be in a bad state after a disconnect;
+                    # rebuild it so the next chat doesn't inherit the failure.
+                    await q.reconnect()
                     continue
                 await db.commit()
 
-    await _emit(100, f"完成，新增 {total} 条消息（{chats_done} 个聊天）")
-    return {"chats": chats_done, "imported": total}
+    summary = f"完成，新增 {total} 条消息（{chats_done} 个聊天）"
+    if skipped:
+        summary += f"，跳过 {len(skipped)} 个"
+    await _emit(100, summary)
+    return {"chats": chats_done, "imported": total, "skipped": skipped}
