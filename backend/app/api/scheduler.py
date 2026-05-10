@@ -1,0 +1,62 @@
+from datetime import datetime, timedelta
+
+from fastapi import APIRouter
+
+from app.core.config import load_config, save_config
+from app.models.scheduler import SchedulerUpdate
+
+router = APIRouter()
+
+
+def _next_run(last_at: str | None, interval_min: int) -> str | None:
+    if not last_at or interval_min <= 0:
+        return None
+    last = datetime.fromisoformat(last_at)
+    return (last + timedelta(minutes=interval_min)).isoformat()
+
+
+@router.get("/api/scheduler")
+async def get_scheduler():
+    cfg = load_config()
+    s = cfg.scheduler
+    return {
+        "sync_enabled": s.sync_enabled,
+        "sync_interval_minutes": s.sync_interval_minutes,
+        "last_sync_at": s.last_sync_at,
+        "next_sync_at": _next_run(s.last_sync_at, s.sync_interval_minutes) if s.sync_enabled else None,
+        "qq_enabled": s.qq_enabled,
+        "qq_interval_minutes": s.qq_interval_minutes,
+        "last_qq_sync_at": s.last_qq_sync_at,
+        "next_qq_sync_at": _next_run(s.last_qq_sync_at, s.qq_interval_minutes) if s.qq_enabled else None,
+        "telegram_enabled": s.telegram_enabled,
+        "telegram_interval_minutes": s.telegram_interval_minutes,
+        "last_telegram_sync_at": s.last_telegram_sync_at,
+        "next_telegram_sync_at": _next_run(s.last_telegram_sync_at, s.telegram_interval_minutes) if s.telegram_enabled else None,
+        "analyze_enabled": s.analyze_enabled,
+        "analyze_interval_minutes": s.analyze_interval_minutes,
+        "last_analyze_at": s.last_analyze_at,
+        "next_analyze_at": _next_run(s.last_analyze_at, s.analyze_interval_minutes) if s.analyze_enabled else None,
+    }
+
+
+@router.put("/api/scheduler")
+async def update_scheduler(body: SchedulerUpdate):
+    cfg = load_config()
+    if body.sync_enabled is not None:
+        cfg.scheduler.sync_enabled = body.sync_enabled
+    if body.sync_interval_minutes is not None:
+        cfg.scheduler.sync_interval_minutes = body.sync_interval_minutes
+    if body.analyze_enabled is not None:
+        cfg.scheduler.analyze_enabled = body.analyze_enabled
+    if body.analyze_interval_minutes is not None:
+        cfg.scheduler.analyze_interval_minutes = body.analyze_interval_minutes
+    if body.qq_enabled is not None:
+        cfg.scheduler.qq_enabled = body.qq_enabled
+    if body.qq_interval_minutes is not None:
+        cfg.scheduler.qq_interval_minutes = body.qq_interval_minutes
+    if body.telegram_enabled is not None:
+        cfg.scheduler.telegram_enabled = body.telegram_enabled
+    if body.telegram_interval_minutes is not None:
+        cfg.scheduler.telegram_interval_minutes = body.telegram_interval_minutes
+    save_config(cfg)
+    return await get_scheduler()
