@@ -6,10 +6,14 @@
 """
 
 import asyncio
+import base64
+import io
 import time
+import uuid
 from typing import Any, Awaitable, Callable
 
 import aiosqlite
+import segno
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
 from telethon.tl.types import User
@@ -29,6 +33,7 @@ PENDING_TTL = 600  # seconds before we drop a half-finished login
 
 _client: TelegramClient | None = None
 _pending: dict[str, dict[str, Any]] = {}  # phone -> {client, phone_code_hash, expires_at}
+_pending_qr: dict[str, dict[str, Any]] = {}  # qr_id -> {client, qr, user?, password_needed?, error?, expires_at}
 
 
 def _purge_expired() -> None:
@@ -108,6 +113,162 @@ async def confirm_code(
         "first_name": user.first_name or "",
         "user_id": user.id,
     }
+
+
+def _purge_expired_qr() -> None:
+    now = time.time()
+    for qid in [q for q, v in _pending_qr.items() if v["expires_at"] < now and not v.get("user")]:
+        state = _pending_qr.pop(qid, None)
+        if state:
+            t = state.get("wait_task")
+            if t and not t.done():
+                t.cancel()
+            try:
+                asyncio.create_task(state["client"].disconnect())
+            except Exception:
+                pass
+
+
+def _qr_png_data_url(url: str) -> str:
+    """Render the tg://login token URL as a base64 PNG data URL the frontend can drop into <img>."""
+    buf = io.BytesIO()
+    segno.make(url, error="m").save(buf, kind="png", scale=8, border=2)
+    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
+
+
+async def _wait_qr(qr_id: str) -> None:
+    """Background task: blocks on QRLogin.wait() and parks the result in _pending_qr.
+
+    Telethon raises SessionPasswordNeededError when 2FA is on — surface that as a
+    `password_needed` flag so the frontend can prompt for the password and finish
+    the sign-in via qr_password()."""
+    state = _pending_qr.get(qr_id)
+    if not state:
+        return
+    qr = state["qr"]
+    try:
+        user = await qr.wait()
+        state["user"] = user
+    except errors.SessionPasswordNeededError:
+        state["password_needed"] = True
+    except asyncio.TimeoutError:
+        state["error"] = "QR expired"
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        state["error"] = str(e)
+
+
+async def start_qr_login(api_id: int, api_hash: str) -> dict[str, Any]:
+    """Issue a fresh tg://login token and start watching for the user's scan."""
+    _purge_expired_qr()
+    if not api_id or not api_hash:
+        raise ValueError("api_id / api_hash 不能为空")
+    client = TelegramClient(StringSession(), api_id, api_hash)
+    await client.connect()
+    qr = await client.qr_login()
+    qr_id = uuid.uuid4().hex[:12]
+    expires_at = qr.expires.timestamp() if qr.expires else time.time() + 30
+    state: dict[str, Any] = {
+        "client": client,
+        "qr": qr,
+        "api_id": api_id,
+        "api_hash": api_hash,
+        "expires_at": expires_at,
+        "user": None,
+        "password_needed": False,
+        "error": None,
+    }
+    state["wait_task"] = asyncio.create_task(_wait_qr(qr_id))
+    _pending_qr[qr_id] = state
+    return {
+        "qr_id": qr_id,
+        "url": qr.url,
+        "qr_png": _qr_png_data_url(qr.url),
+        "expires_at": expires_at,
+    }
+
+
+async def qr_status(qr_id: str) -> dict[str, Any]:
+    """Polled by the frontend every ~2s. Finalizes login on success."""
+    state = _pending_qr.get(qr_id)
+    if not state:
+        return {"status": "expired"}
+    if state.get("error"):
+        err = state["error"]
+        await _drop_qr(qr_id)
+        return {"status": "error", "error": err}
+    if state.get("password_needed"):
+        return {"status": "password_needed"}
+    user = state.get("user")
+    if user:
+        info = await _finalize_qr_login(qr_id, user)
+        return {"status": "success", **info}
+    if state["expires_at"] < time.time():
+        await _drop_qr(qr_id)
+        return {"status": "expired"}
+    return {"status": "pending"}
+
+
+async def qr_password(qr_id: str, password: str) -> dict[str, Any]:
+    """Complete a QR login when the account has 2FA enabled."""
+    state = _pending_qr.get(qr_id)
+    if not state:
+        raise RuntimeError("QR 会话已过期，请重新生成二维码")
+    if not state.get("password_needed"):
+        raise RuntimeError("当前会话不需要密码")
+    client: TelegramClient = state["client"]
+    try:
+        user = await client.sign_in(password=password)
+    except errors.PasswordHashInvalidError:
+        raise RuntimeError("两步验证密码错误")
+    if not isinstance(user, User):
+        raise RuntimeError("登录失败：返回非用户对象")
+    return await _finalize_qr_login(qr_id, user)
+
+
+async def _finalize_qr_login(qr_id: str, user: User) -> dict[str, Any]:
+    """Persist session, swap to active client, and remove the pending entry."""
+    global _client
+    state = _pending_qr.get(qr_id)
+    if not state:
+        raise RuntimeError("QR 会话不存在")
+    client: TelegramClient = state["client"]
+
+    cfg = load_config()
+    cfg.telegram.api_id = state["api_id"]
+    cfg.telegram.api_hash = state["api_hash"]
+    cfg.telegram.session_string = client.session.save()
+    cfg.telegram.username = user.username or (user.first_name or "")
+    cfg.telegram.enabled = True
+    save_config(cfg)
+
+    if _client is not None and _client is not client:
+        try:
+            await _client.disconnect()
+        except Exception:
+            pass
+    _client = client
+
+    _pending_qr.pop(qr_id, None)
+    return {
+        "username": user.username or "",
+        "first_name": user.first_name or "",
+        "user_id": user.id,
+    }
+
+
+async def _drop_qr(qr_id: str) -> None:
+    state = _pending_qr.pop(qr_id, None)
+    if not state:
+        return
+    t = state.get("wait_task")
+    if t and not t.done():
+        t.cancel()
+    try:
+        await state["client"].disconnect()
+    except Exception:
+        pass
 
 
 async def status() -> dict[str, Any]:

@@ -13,3 +13,13 @@ class TelegramLoginConfirm(BaseModel):
     phone: str
     code: str
     password: Optional[str] = None
+
+
+class TelegramQRStart(BaseModel):
+    api_id: int
+    api_hash: str
+
+
+class TelegramQRPassword(BaseModel):
+    qr_id: str
+    password: str

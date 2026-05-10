@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import {
   fetchAPI,
@@ -7,12 +7,16 @@ import {
   type TaskProgress,
   type TelegramStatus,
   type TelegramLoginConfirmResponse,
+  type TelegramQRStartResponse,
+  type TelegramQRStatusResponse,
 } from "@/lib/api"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { Loader2, ExternalLink, LogOut, RefreshCw, ArrowRight } from "lucide-react"
+import { Loader2, ExternalLink, LogOut, RefreshCw, ArrowRight, QrCode, Smartphone } from "lucide-react"
 
-type Step = "idle" | "credentials" | "code" | "password" | "done"
+type Step = "idle" | "credentials" | "code-phone" | "qr" | "qr_password" | "code" | "password" | "done"
+
+const QR_POLL_MS = 2000
 
 export function TelegramCard() {
   const [status, setStatus] = useState<TelegramStatus | null>(null)
@@ -25,7 +29,39 @@ export function TelegramCard() {
   const [busy, setBusy] = useState(false)
   const [syncing, setSyncing] = useState(false)
 
+  // QR-specific state
+  const [qrId, setQrId] = useState("")
+  const [qrPng, setQrPng] = useState("")
+  const [qrExpiresAt, setQrExpiresAt] = useState(0)
+  const [qrSecondsLeft, setQrSecondsLeft] = useState(0)
+  const qrPollRef = useRef<number | null>(null)
+  const stepRef = useRef<Step>("idle")
+  stepRef.current = step
+
   useEffect(() => { void refresh() }, [])
+
+  // Stop polling on unmount or whenever we leave the QR step.
+  useEffect(() => {
+    if (step !== "qr" && qrPollRef.current !== null) {
+      window.clearInterval(qrPollRef.current)
+      qrPollRef.current = null
+    }
+    return () => {
+      if (qrPollRef.current !== null) {
+        window.clearInterval(qrPollRef.current)
+        qrPollRef.current = null
+      }
+    }
+  }, [step])
+
+  // Tick the displayed countdown each second; expiry is enforced by the backend.
+  useEffect(() => {
+    if (step !== "qr" || !qrExpiresAt) return
+    const tick = () => setQrSecondsLeft(Math.max(0, Math.floor(qrExpiresAt - Date.now() / 1000)))
+    tick()
+    const id = window.setInterval(tick, 1000)
+    return () => window.clearInterval(id)
+  }, [step, qrExpiresAt])
 
   const refresh = async () => {
     try {
@@ -37,7 +73,7 @@ export function TelegramCard() {
     }
   }
 
-  const startLogin = async () => {
+  const startSmsLogin = async () => {
     setBusy(true)
     try {
       await fetchAPI<{ phone_code_hash: string }>("/telegram/login/start", {
@@ -53,7 +89,67 @@ export function TelegramCard() {
     }
   }
 
-  const confirm = async (withPassword?: string) => {
+  const startQrLogin = async () => {
+    setBusy(true)
+    try {
+      const res = await fetchAPI<TelegramQRStartResponse>("/telegram/login/qr/start", {
+        method: "POST",
+        body: JSON.stringify({ api_id: Number(apiId), api_hash: apiHash }),
+      })
+      setQrId(res.qr_id)
+      setQrPng(res.qr_png)
+      setQrExpiresAt(res.expires_at)
+      setStep("qr")
+      // Start polling.
+      if (qrPollRef.current !== null) window.clearInterval(qrPollRef.current)
+      qrPollRef.current = window.setInterval(() => { void pollQr(res.qr_id) }, QR_POLL_MS)
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const pollQr = async (id: string) => {
+    // Guard: user might have navigated away between schedule and execution.
+    if (stepRef.current !== "qr" && stepRef.current !== "qr_password") return
+    try {
+      const res = await fetchAPI<TelegramQRStatusResponse>(`/telegram/login/qr/status/${id}`)
+      if (res.status === "success") {
+        toast.success(`已登录 ${res.username || res.first_name || ""}`)
+        await refresh()
+      } else if (res.status === "password_needed") {
+        setStep("qr_password")
+      } else if (res.status === "expired") {
+        toast.error("二维码已过期，请重新生成")
+        setStep("credentials")
+      } else if (res.status === "error") {
+        toast.error(res.error || "登录失败")
+        setStep("credentials")
+      }
+    } catch {
+      // Transient network errors during polling shouldn't kick the user out;
+      // the next tick will retry and the backend will tell us if expired.
+    }
+  }
+
+  const submitQrPassword = async () => {
+    setBusy(true)
+    try {
+      const res = await fetchAPI<TelegramLoginConfirmResponse>("/telegram/login/qr/password", {
+        method: "POST",
+        body: JSON.stringify({ qr_id: qrId, password }),
+      })
+      toast.success(`已登录 ${res.username || res.first_name || ""}`)
+      await refresh()
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmCode = async (withPassword?: string) => {
     setBusy(true)
     try {
       const res = await fetchAPI<TelegramLoginConfirmResponse>("/telegram/login/confirm", {
@@ -123,7 +219,7 @@ export function TelegramCard() {
             Telegram
           </h3>
           <p className="text-xs text-[var(--color-muted-foreground)] mt-1">
-            用账号 API 一键登录，自动拉取所有对话历史
+            扫码或验证码登录后自动拉取所有对话历史
           </p>
         </div>
         <span className={`text-xs px-2 py-0.5 rounded-full ${loggedIn ? "bg-[var(--color-success)]/15 text-[var(--color-success)]" : "bg-[var(--color-muted)] text-[var(--color-muted-foreground)]"}`}>
@@ -155,17 +251,80 @@ export function TelegramCard() {
             <label className="text-xs text-[var(--color-muted-foreground)]">API Hash</label>
             <Input value={apiHash} onChange={e => setApiHash(e.target.value)} placeholder="abcdef0123456789..." />
           </div>
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <Button
+              onClick={startQrLogin}
+              disabled={busy || !apiId || !apiHash}
+              className="w-full"
+            >
+              {busy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <QrCode className="mr-1.5 h-3.5 w-3.5" />}
+              扫码登录
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setStep("code-phone")}
+              disabled={busy}
+              className="w-full"
+            >
+              <Smartphone className="mr-1.5 h-3.5 w-3.5" />
+              短信验证码
+            </Button>
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => setStep("idle")} disabled={busy} className="w-full">返回</Button>
+        </div>
+      )}
+
+      {/* SMS phone-input panel — split out of the original credentials step so QR users don't see this */}
+      {step === "code-phone" && (
+        <div className="space-y-3">
           <div className="space-y-1">
             <label className="text-xs text-[var(--color-muted-foreground)]">手机号（含国家码）</label>
             <Input value={phone} onChange={e => setPhone(e.target.value)} placeholder="+8613800138000" />
           </div>
           <div className="flex gap-2 pt-1">
-            <Button variant="outline" size="sm" onClick={() => setStep("idle")} disabled={busy}>返回</Button>
-            <Button onClick={startLogin} disabled={busy || !apiId || !apiHash || !phone} className="flex-1">
+            <Button variant="outline" size="sm" onClick={() => setStep("credentials")} disabled={busy}>返回</Button>
+            <Button onClick={startSmsLogin} disabled={busy || !phone} className="flex-1">
               {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               发送验证码 <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
             </Button>
           </div>
+        </div>
+      )}
+
+      {step === "qr" && (
+        <div className="space-y-3">
+          <div className="rounded-md border border-[var(--color-border)] bg-white p-3 flex flex-col items-center gap-2">
+            {qrPng ? (
+              <img src={qrPng} alt="Telegram QR login" className="h-48 w-48" />
+            ) : (
+              <Loader2 className="h-8 w-8 animate-spin text-[var(--color-muted-foreground)] my-16" />
+            )}
+            <p className="text-xs text-[var(--color-muted-foreground)] text-center leading-relaxed">
+              在 Telegram 手机客户端 → <span className="font-medium">设置 → 设备 → 扫描二维码</span> 扫描登录
+            </p>
+            <p className="text-xs tabular-nums text-[var(--color-muted-foreground)]">
+              {qrSecondsLeft > 0 ? `${qrSecondsLeft}s 后过期` : "已过期"}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => setStep("credentials")} disabled={busy}>返回</Button>
+            <Button variant="outline" size="sm" onClick={startQrLogin} disabled={busy} className="flex-1">
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />重新生成
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === "qr_password" && (
+        <div className="space-y-3">
+          <p className="text-xs text-[var(--color-warning)]">扫码成功，但此账号开启了两步验证，请输入密码完成登录</p>
+          <div className="space-y-1">
+            <label className="text-xs text-[var(--color-muted-foreground)]">两步验证密码</label>
+            <Input type="password" value={password} onChange={e => setPassword(e.target.value)} />
+          </div>
+          <Button onClick={submitQrPassword} disabled={busy || !password} className="w-full">
+            {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}完成登录
+          </Button>
         </div>
       )}
 
@@ -180,7 +339,7 @@ export function TelegramCard() {
           </div>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => setStep("credentials")} disabled={busy}>返回</Button>
-            <Button onClick={() => confirm()} disabled={busy || !code} className="flex-1">
+            <Button onClick={() => confirmCode()} disabled={busy || !code} className="flex-1">
               {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}确认
             </Button>
           </div>
@@ -194,7 +353,7 @@ export function TelegramCard() {
             <label className="text-xs text-[var(--color-muted-foreground)]">两步验证密码</label>
             <Input type="password" value={password} onChange={e => setPassword(e.target.value)} />
           </div>
-          <Button onClick={() => confirm(password)} disabled={busy || !password} className="w-full">
+          <Button onClick={() => confirmCode(password)} disabled={busy || !password} className="w-full">
             {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}完成登录
           </Button>
         </div>

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react"
 import { useSearchParams } from "react-router-dom"
-import { fetchAPI, getErrorMessage, type ChatInfo, type Message } from "@/lib/api"
+import { toast } from "sonner"
+import { fetchAPI, getErrorMessage, type ChatInfo, type Config, type Message } from "@/lib/api"
 import { formatTime } from "@/lib/utils"
 import { UrgencyBadge, CategoryBadge } from "@/components/MessageBadges"
 import { useDetailPanel } from "@/lib/DetailPanelContext"
@@ -8,7 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetHeader } from "@/components/ui/sheet"
-import { Search, Loader2, Menu } from "lucide-react"
+import { Search, Loader2, Menu, Star } from "lucide-react"
 import { PLATFORM_COLOR, PLATFORM_LABEL, PAGE_SIZE } from "@/lib/constants"
 
 function MessageDetail({ m }: { m: Message }) {
@@ -44,12 +45,36 @@ interface ChatPickerProps {
   setSearch: (v: string) => void
   platform: string
   setPlatform: (v: string) => void
+  filterMode: string
+  filterChats: Set<string>
+  onToggleMode: () => void
+  onToggleChat: (chatName: string) => void
 }
 
-function ChatPicker({ chats, loading, selected, onSelect, search, setSearch, platform, setPlatform }: ChatPickerProps) {
+function ChatPicker({ chats, loading, selected, onSelect, search, setSearch, platform, setPlatform, filterMode, filterChats, onToggleMode, onToggleChat }: ChatPickerProps) {
+  const modeLabel = filterMode === "whitelist" ? "白名单" : "黑名单"
+  const hint = filterChats.size === 0
+    ? "名单为空 — 当前会分析所有聊天"
+    : filterMode === "whitelist"
+      ? `仅分析名单内的 ${filterChats.size} 个聊天`
+      : `跳过名单内的 ${filterChats.size} 个聊天`
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="p-3 border-b border-[var(--color-border)] space-y-2 shrink-0">
+        <button
+          onClick={onToggleMode}
+          title="点击切换 白名单 / 黑名单"
+          className="flex w-full items-center justify-between rounded-md border border-[var(--color-border)] bg-[var(--color-card)] px-2.5 py-1.5 text-xs hover:bg-[var(--color-accent)]"
+        >
+          <span className="flex items-center gap-1.5">
+            <span className="font-medium">分析筛选</span>
+            <span className="rounded-full bg-[var(--color-primary)]/15 px-1.5 py-0.5 text-[var(--color-primary)] tabular-nums">
+              {modeLabel} · {filterChats.size}
+            </span>
+          </span>
+          <span className="text-[var(--color-muted-foreground)]/70">切换 ⇄</span>
+        </button>
+        <p className="text-[10px] text-[var(--color-muted-foreground)] leading-snug">{hint}</p>
         <div className="relative">
           <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-[var(--color-muted-foreground)]" />
           <Input
@@ -75,23 +100,35 @@ function ChatPicker({ chats, loading, selected, onSelect, search, setSearch, pla
           <p className="py-8 text-center text-sm text-[var(--color-muted-foreground)]">暂无聊天</p>
         ) : chats.map(c => {
           const isSelected = selected?.chat_id === c.chat_id && selected?.platform === c.platform
+          const inList = filterChats.has(c.chat_name)
           return (
-            <button
+            <div
               key={`${c.platform}-${c.chat_id}`}
-              onClick={() => onSelect(c)}
-              className={`w-full text-left px-3 py-2.5 transition-colors border-b border-[var(--color-border)]/50 ${isSelected ? "bg-[var(--color-primary)]/10" : "hover:bg-[var(--color-accent)]"}`}
+              className={`group flex items-center border-b border-[var(--color-border)]/50 transition-colors ${isSelected ? "bg-[var(--color-primary)]/10" : "hover:bg-[var(--color-accent)]"}`}
             >
-              <div className="flex items-center gap-2 mb-0.5">
-                <span className="text-sm font-medium truncate flex-1">{c.chat_name || c.chat_id}</span>
-                {c.chat_type === "group" && <span className="text-xs text-[var(--color-muted-foreground)]">群</span>}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs" style={{ color: PLATFORM_COLOR[c.platform] || "var(--color-muted-foreground)" }}>
-                  {PLATFORM_LABEL[c.platform] || c.platform}
-                </span>
-                <span className="text-xs text-[var(--color-muted-foreground)] tabular-nums">{c.msg_count.toLocaleString()} 条</span>
-              </div>
-            </button>
+              <button
+                onClick={() => onSelect(c)}
+                className="flex-1 min-w-0 text-left px-3 py-2.5"
+              >
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-sm font-medium truncate flex-1">{c.chat_name || c.chat_id}</span>
+                  {c.chat_type === "group" && <span className="text-xs text-[var(--color-muted-foreground)]">群</span>}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs" style={{ color: PLATFORM_COLOR[c.platform] || "var(--color-muted-foreground)" }}>
+                    {PLATFORM_LABEL[c.platform] || c.platform}
+                  </span>
+                  <span className="text-xs text-[var(--color-muted-foreground)] tabular-nums">{c.msg_count.toLocaleString()} 条</span>
+                </div>
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onToggleChat(c.chat_name) }}
+                title={inList ? "从名单移除" : "加入名单"}
+                className={`mr-2 rounded p-1.5 transition-colors ${inList ? "text-[var(--color-warning)]" : "text-[var(--color-muted-foreground)]/40 hover:text-[var(--color-foreground)]"}`}
+              >
+                <Star className={`h-3.5 w-3.5 ${inList ? "fill-current" : ""}`} />
+              </button>
+            </div>
           )
         })}
       </div>
@@ -112,6 +149,8 @@ export default function Chats() {
   const [platform, setPlatform] = useState(searchParams.get("platform") || "")
   const [msgHasMore, setMsgHasMore] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [filterMode, setFilterMode] = useState("whitelist")
+  const [filterChats, setFilterChats] = useState<Set<string>>(new Set())
   const msgOffsetRef = useRef(0)
 
   useEffect(() => {
@@ -134,6 +173,50 @@ export default function Chats() {
       })
     return () => { cancelled = true }
   }, [searchParams])
+
+  // Load chat-filter config alongside the chat list — both feed the picker.
+  useEffect(() => {
+    let cancelled = false
+    fetchAPI<Config>("/config").then(cfg => {
+      if (cancelled) return
+      setFilterMode(cfg.chat_filter.mode)
+      setFilterChats(new Set(cfg.chat_filter.chats))
+    }).catch(() => { /* config is optional for browsing — silent fail is fine */ })
+    return () => { cancelled = true }
+  }, [])
+
+  const toggleFilterChat = useCallback(async (chatName: string) => {
+    if (!chatName) return
+    const inList = filterChats.has(chatName)
+    // Optimistic update so the star feels responsive on a 193-row list.
+    const next = new Set(filterChats)
+    if (inList) next.delete(chatName); else next.add(chatName)
+    setFilterChats(next)
+    try {
+      await fetchAPI<Config>("/config", {
+        method: "PUT",
+        body: JSON.stringify(inList ? { remove_chat: chatName } : { add_chat: chatName }),
+      })
+    } catch (e) {
+      setFilterChats(filterChats)  // rollback
+      toast.error(getErrorMessage(e))
+    }
+  }, [filterChats])
+
+  const toggleFilterMode = useCallback(async () => {
+    const next = filterMode === "whitelist" ? "blacklist" : "whitelist"
+    setFilterMode(next)
+    try {
+      await fetchAPI<Config>("/config", {
+        method: "PUT",
+        body: JSON.stringify({ filter_mode: next }),
+      })
+      toast.success(`已切换到${next === "whitelist" ? "白名单" : "黑名单"}模式`)
+    } catch (e) {
+      setFilterMode(filterMode)  // rollback
+      toast.error(getErrorMessage(e))
+    }
+  }, [filterMode])
 
   const loadMessages = useCallback(async (chat: ChatInfo, append = false) => {
     setLoadingMsgs(true)
@@ -183,6 +266,10 @@ export default function Chats() {
           setSearch={setChatSearch}
           platform={platform}
           setPlatform={setPlatform}
+          filterMode={filterMode}
+          filterChats={filterChats}
+          onToggleMode={toggleFilterMode}
+          onToggleChat={toggleFilterChat}
         />
       </div>
 
@@ -198,6 +285,10 @@ export default function Chats() {
           setSearch={setChatSearch}
           platform={platform}
           setPlatform={setPlatform}
+          filterMode={filterMode}
+          filterChats={filterChats}
+          onToggleMode={toggleFilterMode}
+          onToggleChat={toggleFilterChat}
         />
       </Sheet>
 

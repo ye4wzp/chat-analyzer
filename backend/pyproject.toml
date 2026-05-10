@@ -13,6 +13,7 @@ dependencies = [
     "rich>=13.9",
     "pytest>=8.0",
     "telethon>=1.43.2",
+    "segno>=1.6",
 ]
 
 [project.scripts]

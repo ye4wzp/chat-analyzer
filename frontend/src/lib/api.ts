@@ -198,6 +198,21 @@ export interface TelegramLoginConfirmResponse {
   need_password?: boolean
 }
 
+export interface TelegramQRStartResponse {
+  qr_id: string
+  url: string
+  qr_png: string  // data:image/png;base64,... ready to drop into <img src=...>
+  expires_at: number
+}
+
+export interface TelegramQRStatusResponse {
+  status: "pending" | "password_needed" | "success" | "expired" | "error"
+  username?: string
+  first_name?: string
+  user_id?: number
+  error?: string
+}
+
 export interface QQTestResponse {
   ok: boolean
   nick: string
