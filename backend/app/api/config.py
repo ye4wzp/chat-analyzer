@@ -1,6 +1,8 @@
 import httpx
+import aiosqlite
 from fastapi import APIRouter, HTTPException
 
+from app.core import database
 from app.core.config import load_config, save_config
 from app.models.config import ConfigUpdate
 
@@ -102,3 +104,57 @@ async def test_llm_connection():
             return {"status": "ok", "provider": "openai_compatible"}
     except Exception as e:
         raise HTTPException(502, f"连接失败: {e}")
+
+
+@router.get("/api/llm/usage")
+async def get_llm_usage():
+    """LLM token usage stats: today's total + last 7 days + per-purpose split.
+
+    Powers the Dashboard budget card. Computed from llm_usage table at request time
+    so it's always consistent with the actual writes."""
+    cfg = load_config()
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+        db.row_factory = aiosqlite.Row
+        today_row = await db.execute_fetchall(
+            """SELECT
+                COALESCE(SUM(prompt_tokens), 0) AS p,
+                COALESCE(SUM(completion_tokens), 0) AS c,
+                COUNT(*) AS n
+               FROM llm_usage
+               WHERE DATE(timestamp, 'localtime') = DATE('now', 'localtime')"""
+        )
+        week_row = await db.execute_fetchall(
+            """SELECT
+                DATE(timestamp, 'localtime') AS day,
+                COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
+               FROM llm_usage
+               WHERE timestamp >= datetime('now', '-7 days')
+               GROUP BY day ORDER BY day"""
+        )
+        purpose_row = await db.execute_fetchall(
+            """SELECT
+                COALESCE(purpose, '') AS purpose,
+                COUNT(*) AS calls,
+                COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens
+               FROM llm_usage
+               WHERE DATE(timestamp, 'localtime') = DATE('now', 'localtime')
+               GROUP BY purpose"""
+        )
+
+    t = today_row[0] if today_row else {"p": 0, "c": 0, "n": 0}
+    today_total = int(t["p"]) + int(t["c"])
+    return {
+        "budget": cfg.daily_token_budget,
+        "today": {
+            "prompt_tokens": int(t["p"]),
+            "completion_tokens": int(t["c"]),
+            "total": today_total,
+            "calls": int(t["n"]),
+            "pct": round(100 * today_total / cfg.daily_token_budget, 2) if cfg.daily_token_budget else 0,
+        },
+        "last_7_days": [{"day": r["day"], "tokens": int(r["tokens"])} for r in week_row],
+        "today_by_purpose": [
+            {"purpose": r["purpose"] or "(其他)", "calls": int(r["calls"]), "tokens": int(r["tokens"])}
+            for r in purpose_row
+        ],
+    }

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     analyze,
+    backups,
     chats,
     config,
     dashboard,
@@ -53,7 +54,7 @@ app.add_middleware(
 
 for module in (
     dashboard, messages, chats, search, config,
-    sync, qq, telegram, tasks, analyze, knowledge, scheduler,
+    sync, qq, telegram, tasks, analyze, knowledge, scheduler, backups,
 ):
     app.include_router(module.router)
 

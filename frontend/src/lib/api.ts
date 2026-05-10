@@ -110,6 +110,19 @@ export interface LLMTestResponse {
   provider: string
 }
 
+export interface TokenUsage {
+  budget: number
+  today: {
+    prompt_tokens: number
+    completion_tokens: number
+    total: number
+    calls: number
+    pct: number
+  }
+  last_7_days: { day: string; tokens: number }[]
+  today_by_purpose: { purpose: string; calls: number; tokens: number }[]
+}
+
 export interface DashboardStats {
   total_messages: number
   total_chats: number

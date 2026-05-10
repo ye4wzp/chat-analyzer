@@ -32,6 +32,28 @@ MAX_WINDOW_SIZE = 40
 OVERLAP_SIZE = 5
 MAX_MSG_CONTENT_CHARS = 300  # cap per-message content so one long forward doesn't blow the prompt
 
+
+async def _record_usage(
+    provider: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    purpose: str,
+    task_id: str | None = None,
+) -> None:
+    """Best-effort write to llm_usage table. Failures are swallowed so a bad
+    write never aborts an analyze run."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+            await db.execute(
+                "INSERT INTO llm_usage (provider, model, prompt_tokens, completion_tokens, purpose, task_id)"
+                " VALUES (?,?,?,?,?,?)",
+                (provider, model, int(prompt_tokens), int(completion_tokens), purpose, task_id),
+            )
+            await db.commit()
+    except Exception as e:
+        logger.warning("usage record failed: %s", e)
+
 CLASSIFY_PROMPT = """从以下对话中提取有价值的知识点，忽略闲聊、水词、表情、问候等无实质内容的消息。
 
 提取标准（只提取以下类型）：
@@ -196,17 +218,18 @@ class AnalyzerService:
             )
         self.tokens_used_today += estimated_tokens
 
-    async def _call_llm(self, prompt: str) -> str | None:
+    async def _call_llm(self, prompt: str, purpose: str = "") -> str | None:
         """Call LLM via configured provider. Returns raw text response."""
         llm = self.cfg.llm
 
         if llm.provider == "openai_compatible":
-            return await self._call_openai(prompt, llm)
+            return await self._call_openai(prompt, llm, purpose)
 
         # Default: claude CLI
-        return await self._call_claude_cli(prompt)
+        return await self._call_claude_cli(prompt, purpose)
 
-    async def _call_claude_cli(self, prompt: str) -> str | None:
+    async def _call_claude_cli(self, prompt: str, purpose: str = "") -> str | None:
+        self.llm_call_count += 1
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", "--output-format", "text", prompt,
             stdout=asyncio.subprocess.PIPE,
@@ -214,10 +237,18 @@ class AnalyzerService:
         )
         stdout, _ = await proc.communicate()
         if proc.returncode != 0:
+            self.llm_fail_count += 1
+            self.last_llm_error = "claude CLI exit nonzero"
             return None
-        return stdout.decode().strip()
+        out = stdout.decode().strip()
+        # Claude CLI doesn't surface usage; estimate from char counts (rough
+        # 1 token ≈ 3 chars for Chinese) so the budget bar at least moves.
+        await _record_usage(
+            "claude_cli", "claude", len(prompt) // 3, len(out) // 3, purpose,
+        )
+        return out
 
-    async def _call_openai(self, prompt: str, llm) -> str | None:
+    async def _call_openai(self, prompt: str, llm, purpose: str = "") -> str | None:
         self.llm_call_count += 1
         try:
             api_url = llm.api_url.replace("localhost", "127.0.0.1")
@@ -241,7 +272,19 @@ class AnalyzerService:
                         llm.model, resp.status_code, body, len(prompt),
                     )
                     return None
-                return resp.json()["choices"][0]["message"]["content"].strip()
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"].strip()
+                # OpenAI-compat usually returns usage; fall back to char/3 estimate
+                # for backends that omit it (some local servers do).
+                usage = data.get("usage") or {}
+                await _record_usage(
+                    llm.provider,
+                    llm.model,
+                    int(usage.get("prompt_tokens") or len(prompt) // 3),
+                    int(usage.get("completion_tokens") or len(content) // 3),
+                    purpose,
+                )
+                return content
         except Exception as e:
             self.llm_fail_count += 1
             err_msg = str(e) or type(e).__name__
@@ -274,7 +317,7 @@ class AnalyzerService:
         text = _format_window(window)
         prompt = CLASSIFY_PROMPT.format(messages=text)
         self._check_budget(len(text) // 3 + 500)
-        raw = await self._call_llm(prompt)
+        raw = await self._call_llm(prompt, purpose="extract")
         items = self._parse_llm_response(raw, len(window))
         # attach source message ids
         for item in items:
@@ -288,7 +331,7 @@ class AnalyzerService:
     async def extend_knowledge(self, item: dict) -> str:
         prompt = EXTEND_PROMPT.format(knowledge=f"**{item['title']}**\n{item['content']}")
         self._check_budget(len(item['content']) // 3 + 300)
-        return await self._call_llm(prompt) or ""
+        return await self._call_llm(prompt, purpose="extend") or ""
 
     async def analyze_messages(self, messages: list[dict], on_progress=None) -> tuple[list[dict], str]:
         """Extract knowledge items from messages. Returns (knowledge_items, summary).
@@ -331,5 +374,5 @@ class AnalyzerService:
         text = _format_window(messages[:30])
         prompt = SUMMARY_PROMPT.format(messages=text)
         self._check_budget(len(text) // 3 + 300)
-        raw = await self._call_llm(prompt)
+        raw = await self._call_llm(prompt, purpose="summarize")
         return raw or ""

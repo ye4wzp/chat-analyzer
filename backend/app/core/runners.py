@@ -11,12 +11,14 @@ from app.models.analyze import AnalyzeRequest
 
 async def run_sync(task_id: str, new_only: bool):
     from app.services.sync.wechat import sync_new_messages, sync_sessions
+    from app.services.backup import maybe_backup_before_sync
 
     _tasks[task_id]["status"] = "running"
     _tasks[task_id]["message"] = "正在同步微信数据..."
     _tasks[task_id]["progress"] = 30
 
     try:
+        await maybe_backup_before_sync()  # throttled 5min, swallows failures
         count = await (sync_new_messages() if new_only else sync_sessions())
         _tasks[task_id].update(status="done", progress=100, message=f"同步完成，新增 {count} 条消息")
     except Exception as e:
@@ -46,10 +48,12 @@ async def run_import(task_id: str, platform: str, path: str):
 
 async def run_qq_sync(task_id: str):
     from app.services.sync.qq_qce import sync_all
+    from app.services.backup import maybe_backup_before_sync
     _tasks[task_id]["status"] = "running"
     _tasks[task_id]["message"] = "正在同步 QQ..."
     _tasks[task_id]["progress"] = 5
     try:
+        await maybe_backup_before_sync()
         result = await sync_all(progress=make_progress(task_id))
         _tasks[task_id].update(
             status="done", progress=100,
@@ -61,10 +65,12 @@ async def run_qq_sync(task_id: str):
 
 async def run_telegram_sync(task_id: str):
     from app.services.sync.telegram_live import sync_all
+    from app.services.backup import maybe_backup_before_sync
     _tasks[task_id]["status"] = "running"
     _tasks[task_id]["message"] = "正在同步 Telegram..."
     _tasks[task_id]["progress"] = 5
     try:
+        await maybe_backup_before_sync()
         result = await sync_all(progress=make_progress(task_id))
         _tasks[task_id].update(
             status="done", progress=100,

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from "recharts"
-import { fetchAPI, type DashboardStats } from "@/lib/api"
-import { MessageSquare, Users, BookOpen, TrendingUp, ArrowRight } from "lucide-react"
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend, BarChart, Bar } from "recharts"
+import { fetchAPI, type DashboardStats, type TokenUsage } from "@/lib/api"
+import { MessageSquare, Users, BookOpen, TrendingUp, ArrowRight, Cpu } from "lucide-react"
 import { PLATFORM_COLOR, PLATFORM_LABEL } from "@/lib/constants"
 
 interface DailyRow { date: string; [platform: string]: string | number }
@@ -32,6 +32,75 @@ function pivotDaily(rows: { date: string; platform: string; count: number }[]) {
 
 function shortDate(d: string) {
   return `${d.slice(5, 7)}/${d.slice(8, 10)}`
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + "B"
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M"
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k"
+  return String(n)
+}
+
+function TokenUsageCard() {
+  const [usage, setUsage] = useState<TokenUsage | null>(null)
+  useEffect(() => {
+    fetchAPI<TokenUsage>("/llm/usage").then(setUsage).catch(() => { /* missing endpoint or empty DB shouldn't crash dashboard */ })
+  }, [])
+
+  if (!usage) return null
+  const pct = Math.min(100, usage.today.pct)
+  const overBudget = usage.today.total > usage.budget
+  const barColor = overBudget ? "var(--color-destructive)" : pct > 80 ? "var(--color-warning)" : "var(--color-success)"
+
+  return (
+    <section className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+      <div className="flex items-start justify-between mb-3">
+        <h2 className="text-sm font-semibold flex items-center gap-1.5">
+          <Cpu className="h-4 w-4 text-[var(--color-info)]" />
+          Token 用量
+        </h2>
+        <span className="text-xs text-[var(--color-muted-foreground)] tabular-nums">
+          {usage.today.calls} 次调用
+        </span>
+      </div>
+      <div className="space-y-1.5">
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="text-[var(--color-muted-foreground)]">今日</span>
+          <span className="tabular-nums">
+            <span className="font-semibold text-sm" style={{ color: barColor }}>{fmtTokens(usage.today.total)}</span>
+            <span className="text-[var(--color-muted-foreground)]"> / {fmtTokens(usage.budget)} ({pct.toFixed(1)}%)</span>
+          </span>
+        </div>
+        <div className="h-1.5 rounded-full bg-[var(--color-secondary)] overflow-hidden">
+          <div className="h-full transition-all" style={{ width: `${pct}%`, background: barColor }} />
+        </div>
+      </div>
+      {usage.today_by_purpose.length > 0 && (
+        <div className="mt-3 flex gap-3 text-xs flex-wrap">
+          {usage.today_by_purpose.map(p => (
+            <span key={p.purpose} className="text-[var(--color-muted-foreground)]">
+              <span className="font-medium text-[var(--color-foreground)]">{p.purpose}</span>: {fmtTokens(p.tokens)} ({p.calls})
+            </span>
+          ))}
+        </div>
+      )}
+      {usage.last_7_days.length > 1 && (
+        <div className="h-16 mt-3">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={usage.last_7_days} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
+              <Bar dataKey="tokens" fill="var(--color-info)" radius={[2, 2, 0, 0]} />
+              <Tooltip
+                cursor={{ fill: "var(--color-accent)" }}
+                contentStyle={{ background: "var(--color-card-elevated)", border: "1px solid var(--color-border)", fontSize: 12 }}
+                formatter={(v) => [fmtTokens(Number(v) || 0), "tokens"]}
+                labelFormatter={(d) => String(d)}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </section>
+  )
 }
 
 function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ name?: string; value?: number; color?: string }>; label?: string }) {
@@ -171,6 +240,8 @@ export default function Dashboard() {
           )}
         </section>
       </div>
+
+      <TokenUsageCard />
 
       {/* Recent knowledge */}
       {stats.recent_knowledge.length > 0 && (

@@ -73,6 +73,21 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Per-call LLM usage log. Powers Dashboard's daily-budget card and lets us see
+-- which tasks/models burn the most. Keep raw counts; aggregate at query time.
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    provider TEXT,
+    model TEXT,
+    prompt_tokens INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    task_id TEXT,
+    purpose TEXT  -- "extract" | "summarize" | "extend" | "embed"
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_ts ON llm_usage(timestamp);
+
 CREATE INDEX IF NOT EXISTS idx_knowledge_batch ON knowledge_items(batch_id);
 """
 

@@ -9,10 +9,11 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { LLMTab } from "./settings/LLMTab"
 import { ImportTab } from "./settings/ImportTab"
+import { BackupsPanel } from "./settings/BackupsPanel"
 import { Loader2, Clock } from "lucide-react"
 import { formatTime } from "@/lib/utils"
 
-const TAB_KEYS = ["general", "model", "sources", "scheduler"] as const
+const TAB_KEYS = ["general", "model", "sources", "scheduler", "backups"] as const
 type TabKey = typeof TAB_KEYS[number]
 
 export default function Settings() {
@@ -134,6 +135,7 @@ export default function Settings() {
           <TabsTrigger value="model">AI 模型</TabsTrigger>
           <TabsTrigger value="sources">数据源</TabsTrigger>
           <TabsTrigger value="scheduler">定时任务</TabsTrigger>
+          <TabsTrigger value="backups">备份</TabsTrigger>
         </TabsList>
 
         <TabsContent value="general">
@@ -215,6 +217,10 @@ export default function Settings() {
               {savingScheduler && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}保存定时配置
             </Button>
           </section>
+        </TabsContent>
+
+        <TabsContent value="backups">
+          <BackupsPanel />
         </TabsContent>
       </Tabs>
     </div>
