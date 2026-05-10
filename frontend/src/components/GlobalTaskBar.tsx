@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
-import { Activity, ChevronDown, X, Loader2, CheckCircle2, AlertCircle } from "lucide-react"
-import { fetchAPI, type TaskState } from "@/lib/api"
+import { Activity, ChevronDown, X, Loader2, CheckCircle2, AlertCircle, Square } from "lucide-react"
+import { toast } from "sonner"
+import { fetchAPI, getErrorMessage, type TaskState } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const POLL_MS = 1500
@@ -11,12 +12,14 @@ const TASK_LABEL: Record<string, string> = {
   import_qq: "QQ 导入",
   import_telegram: "Telegram 导入",
   analyze: "AI 分析",
+  qq_install: "QQ 启动器安装",
 }
 
 function StatusIcon({ status }: { status: string }) {
   if (status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-info)]" />
   if (status === "done") return <CheckCircle2 className="h-3.5 w-3.5 text-[var(--color-success)]" />
   if (status === "error") return <AlertCircle className="h-3.5 w-3.5 text-[var(--color-destructive)]" />
+  if (status === "cancelled") return <Square className="h-3.5 w-3.5 text-[var(--color-muted-foreground)]" />
   return <Activity className="h-3.5 w-3.5 text-[var(--color-muted-foreground)]" />
 }
 
@@ -48,6 +51,15 @@ export function GlobalTaskBar() {
     setHidden(prev => new Set(prev).add(id))
   }
 
+  const cancel = async (id: string) => {
+    try {
+      await fetchAPI(`/tasks/${id}/cancel`, { method: "POST" })
+      toast.success("已发送取消请求")
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e))
+    }
+  }
+
   return (
     <div className="relative shrink-0 border-b border-[var(--color-border)] bg-[var(--color-card)]/60 backdrop-blur">
       {/* indeterminate sweep when anything is running */}
@@ -77,7 +89,19 @@ export function GlobalTaskBar() {
               <StatusIcon status={t.status} />
               <span className="font-medium">{TASK_LABEL[t.type] || t.type}</span>
               <span className="flex-1 truncate text-[var(--color-muted-foreground)]">{t.message}</span>
-              {t.status === "running" && <span className="tabular-nums text-[var(--color-muted-foreground)]">{t.progress}%</span>}
+              {t.status === "running" && (
+                <>
+                  <span className="tabular-nums text-[var(--color-muted-foreground)]">{t.progress}%</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); void cancel(t.id) }}
+                    aria-label="取消"
+                    title="取消任务"
+                    className="rounded p-0.5 text-[var(--color-muted-foreground)] hover:bg-[var(--color-destructive)]/10 hover:text-[var(--color-destructive)]"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </>
+              )}
               {t.status !== "running" && (
                 <button onClick={() => dismiss(t.id)} aria-label="清除" className="rounded p-0.5 text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]">
                   <X className="h-3 w-3" />

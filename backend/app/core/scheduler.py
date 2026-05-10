@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import load_config, save_config
 from app.core.runners import run_analyze, run_qq_sync, run_sync, run_telegram_sync
-from app.core.tasks import create_task, is_task_running
+from app.core.tasks import create_task, is_task_running, spawn_cancellable
 from app.models.analyze import AnalyzeRequest
 
 
@@ -21,7 +21,7 @@ async def scheduler_loop():
                 last = datetime.fromisoformat(s.last_sync_at) if s.last_sync_at else None
                 if not last or now >= last + timedelta(minutes=s.sync_interval_minutes):
                     task_id = create_task("sync_wechat")
-                    asyncio.create_task(run_sync(task_id, True))
+                    spawn_cancellable(task_id, run_sync(task_id, True))
                     cfg.scheduler.last_sync_at = now.isoformat()
                     save_config(cfg)
 
@@ -29,7 +29,7 @@ async def scheduler_loop():
                 last = datetime.fromisoformat(s.last_qq_sync_at) if s.last_qq_sync_at else None
                 if not last or now >= last + timedelta(minutes=s.qq_interval_minutes):
                     task_id = create_task("sync_qq")
-                    asyncio.create_task(run_qq_sync(task_id))
+                    spawn_cancellable(task_id, run_qq_sync(task_id))
                     cfg = load_config()
                     cfg.scheduler.last_qq_sync_at = now.isoformat()
                     save_config(cfg)
@@ -38,7 +38,7 @@ async def scheduler_loop():
                 last = datetime.fromisoformat(s.last_telegram_sync_at) if s.last_telegram_sync_at else None
                 if not last or now >= last + timedelta(minutes=s.telegram_interval_minutes):
                     task_id = create_task("sync_telegram")
-                    asyncio.create_task(run_telegram_sync(task_id))
+                    spawn_cancellable(task_id, run_telegram_sync(task_id))
                     cfg = load_config()
                     cfg.scheduler.last_telegram_sync_at = now.isoformat()
                     save_config(cfg)
@@ -47,7 +47,7 @@ async def scheduler_loop():
                 last = datetime.fromisoformat(s.last_analyze_at) if s.last_analyze_at else None
                 if not last or now >= last + timedelta(minutes=s.analyze_interval_minutes):
                     task_id = create_task("analyze")
-                    asyncio.create_task(run_analyze(task_id, AnalyzeRequest()))
+                    spawn_cancellable(task_id, run_analyze(task_id, AnalyzeRequest()))
                     cfg = load_config()
                     cfg.scheduler.last_analyze_at = now.isoformat()
                     save_config(cfg)

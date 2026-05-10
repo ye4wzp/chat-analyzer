@@ -1,11 +1,9 @@
-import asyncio
-
 import httpx
 from fastapi import APIRouter, HTTPException
 
 from app.core.config import load_config
 from app.core.runners import run_qq_install, run_qq_sync
-from app.core.tasks import create_task, is_task_running
+from app.core.tasks import create_task, is_task_running, spawn_cancellable
 
 router = APIRouter()
 
@@ -29,7 +27,7 @@ async def sync_qq():
     if is_task_running("sync_qq"):
         raise HTTPException(409, "QQ 同步正在运行")
     task_id = create_task("sync_qq")
-    asyncio.create_task(run_qq_sync(task_id))
+    spawn_cancellable(task_id, run_qq_sync(task_id))
     return {"task_id": task_id}
 
 
@@ -44,7 +42,7 @@ async def qq_launcher_install(force: bool = False):
     if is_task_running("qq_install"):
         raise HTTPException(409, "安装正在进行中")
     task_id = create_task("qq_install")
-    asyncio.create_task(run_qq_install(task_id, force))
+    spawn_cancellable(task_id, run_qq_install(task_id, force))
     return {"task_id": task_id}
 
 

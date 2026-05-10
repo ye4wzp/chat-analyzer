@@ -1,9 +1,7 @@
-import asyncio
-
 from fastapi import APIRouter, HTTPException
 
 from app.core.runners import run_telegram_sync
-from app.core.tasks import create_task, is_task_running
+from app.core.tasks import create_task, is_task_running, spawn_cancellable
 from app.models.telegram import TelegramLoginConfirm, TelegramLoginStart
 
 router = APIRouter()
@@ -48,5 +46,5 @@ async def sync_telegram():
     if is_task_running("sync_telegram"):
         raise HTTPException(409, "Telegram 同步正在运行")
     task_id = create_task("sync_telegram")
-    asyncio.create_task(run_telegram_sync(task_id))
+    spawn_cancellable(task_id, run_telegram_sync(task_id))
     return {"task_id": task_id}

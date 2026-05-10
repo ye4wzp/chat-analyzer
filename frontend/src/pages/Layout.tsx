@@ -18,6 +18,7 @@ const nav = [
 
 const TASK_TITLE: Record<string, string> = {
   "/sync/wechat": "微信同步",
+  "/sync/all": "全平台同步",
   "/analyze": "AI 分析",
 }
 
@@ -34,6 +35,25 @@ function Inner() {
 
   // Mobile detail sheet auto-opens when content arrives, auto-closes on close()
   useEffect(() => { if (content) setDetailOpen(true) }, [content])
+
+  const runSyncAll = async () => {
+    const toastId = toast.loading("已触发：微信 + QQ + Telegram 同步")
+    try {
+      const res = await fetchAPI<{ tasks: Array<{ type: string; task_id: string }> }>(
+        "/sync/all", { method: "POST" }
+      )
+      if (res.tasks.length === 0) {
+        toast.info("没有可启动的同步（可能正在运行）", { id: toastId })
+      } else {
+        const names = res.tasks.map(t => ({
+          sync_wechat: "微信", sync_qq: "QQ", sync_telegram: "Telegram",
+        }[t.type] ?? t.type)).join(" + ")
+        toast.success(`已启动: ${names}（在底部任务栏查看进度）`, { id: toastId })
+      }
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e), { id: toastId })
+    }
+  }
 
   const runTask = async (endpoint: string, body?: Record<string, string>) => {
     if (taskRunning) return
@@ -122,12 +142,11 @@ function Inner() {
         <div className="mt-auto px-3 pb-4 border-t border-[var(--color-border)] pt-4 flex flex-col gap-0.5">
           <p className="px-3 mb-1 text-xs uppercase tracking-wider text-[var(--color-muted-foreground)]/60">操作</p>
           <button
-            onClick={() => { void runTask("/sync/wechat") }}
-            disabled={taskRunning}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors text-left text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)] hover:text-[var(--color-foreground)] disabled:opacity-50 disabled:pointer-events-none"
+            onClick={() => { void runSyncAll() }}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors text-left text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)] hover:text-[var(--color-foreground)]"
           >
-            <RefreshCw className={`h-3.5 w-3.5 shrink-0 ${taskRunning ? "animate-spin" : ""}`} />
-            同步微信
+            <RefreshCw className="h-3.5 w-3.5 shrink-0" />
+            同步全部
           </button>
           <button
             onClick={() => { navigate("/settings?tab=sources"); setSidebarOpen(false) }}

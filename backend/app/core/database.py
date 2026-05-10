@@ -86,6 +86,10 @@ async def get_db() -> aiosqlite.Connection:
 async def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(str(DB_PATH)) as db:
+        # WAL lets concurrent syncs (wechat + qq + telegram) write without
+        # tripping over each other's locks. Set once; persists in the file.
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA synchronous=NORMAL")
         await db.executescript(SCHEMA_SQL)
         await _migrate_db(db)
         await db.commit()

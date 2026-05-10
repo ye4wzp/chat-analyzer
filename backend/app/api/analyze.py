@@ -1,11 +1,9 @@
-import asyncio
-
 import aiosqlite
 from fastapi import APIRouter, HTTPException
 
 from app.core import database
 from app.core.runners import run_analyze
-from app.core.tasks import _pending_results, create_task
+from app.core.tasks import _pending_results, create_task, spawn_cancellable
 from app.models.analyze import AnalyzeRequest, ConfirmRequest
 
 router = APIRouter()
@@ -14,7 +12,7 @@ router = APIRouter()
 @router.post("/api/analyze")
 async def analyze(body: AnalyzeRequest = AnalyzeRequest()):
     task_id = create_task("analyze")
-    asyncio.create_task(run_analyze(task_id, body))
+    spawn_cancellable(task_id, run_analyze(task_id, body))
     return {"task_id": task_id}
 
 
