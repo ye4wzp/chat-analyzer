@@ -7,7 +7,7 @@
 ## 一、项目位置
 
 ```
-/Users/xiafanxing/Documents/项目/chat-analyzer/
+chat-analyzer/
 ```
 
 主要子目录：
@@ -246,11 +246,11 @@ chat-analyzer/
 
 ```bash
 # 1. 构建前端
-cd /Users/xiafanxing/Documents/项目/chat-analyzer/frontend
+cd chat-analyzer/frontend
 npm run build
 
 # 2. 启动后端
-cd /Users/xiafanxing/Documents/项目/chat-analyzer/backend
+cd chat-analyzer/backend
 source .venv/bin/activate
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
@@ -344,8 +344,8 @@ cd frontend && npm run dev
 
 ## 十、相关参考
 
-- 项目自带说明（较早版本）：`/Users/xiafanxing/Documents/项目/chat-analyzer/PROJECT.md`
-- 历史实施计划：`/Users/xiafanxing/Documents/项目/chat-analyzer/docs/plans/`
+- 项目自带说明（较早版本）：`chat-analyzer/PROJECT.md`
+- 历史实施计划：`chat-analyzer/docs/plans/`
 - 最近一次大改造的实施计划：`~/.claude/plans/synthetic-beaming-kahan.md`
 - QCE 项目：<https://github.com/shuakami/qq-chat-exporter>
 - Telethon 文档：<https://docs.telethon.dev/>

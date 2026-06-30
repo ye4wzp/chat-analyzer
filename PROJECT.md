@@ -3,7 +3,7 @@
 ## 项目位置
 
 ```
-/Users/xiafanxing/Documents/项目/chat-analyzer/
+chat-analyzer/
 ```
 
 ## 项目概述
@@ -56,16 +56,16 @@ chat-analyzer/
 
 ```bash
 # 后端
-cd /Users/xiafanxing/Documents/项目/chat-analyzer/backend
+cd chat-analyzer/backend
 source .venv/bin/activate
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 # 前端（开发模式）
-cd /Users/xiafanxing/Documents/项目/chat-analyzer/frontend
+cd chat-analyzer/frontend
 npm run dev
 
 # 前端（构建，后端自动 serve）
-cd /Users/xiafanxing/Documents/项目/chat-analyzer/frontend
+cd chat-analyzer/frontend
 npm run build
 ```
 
