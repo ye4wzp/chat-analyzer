@@ -1,5 +1,7 @@
 # Chat Analyzer · 聊天记录智能分析系统
 
+**中文** · [English](README.en.md)
+
 > 本地优先的多平台（微信 / QQ / Telegram）聊天记录聚合 + AI 分析工具。所有数据落在本地，AI 只做建议、用户做决策。
 
 A local-first tool that aggregates your WeChat / QQ / Telegram chat history into one SQLite database and uses an LLM to extract knowledge, tag contacts, and surface to-dos — entirely on your machine.
