@@ -88,7 +88,7 @@ def spawn_cancellable(task_id: str, coro) -> asyncio.Task:
 
 
 def is_task_running(task_type: str) -> bool:
-    return any(t["type"] == task_type and t["status"] == "running" for t in _tasks.values())
+    return any(t["type"] == task_type and t["status"] not in _TERMINAL for t in _tasks.values())
 
 
 def make_progress(task_id: str):

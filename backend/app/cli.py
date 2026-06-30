@@ -103,7 +103,7 @@ def list_chats():
     from app.core.database import DB_PATH
 
     async def _run():
-        async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
             db.row_factory = aiosqlite.Row
             rows = await db.execute_fetchall(
                 """SELECT platform, chat_id, chat_name, chat_type,
@@ -164,6 +164,7 @@ def analyze(chat: str | None, since: str | None, until: str | None, limit: int):
     """分析消息（预过滤 + Claude Code 分类）"""
     import aiosqlite
     from app.core.database import DB_PATH
+    from app.core.time_utils import add_time_filters
     from app.services.analyzer import AnalyzerService, TokenBudgetExceeded
 
     async def _run():
@@ -171,7 +172,7 @@ def analyze(chat: str | None, since: str | None, until: str | None, limit: int):
         svc = AnalyzerService()
         cfg = load_config()
 
-        async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
             db.row_factory = aiosqlite.Row
 
             conditions = []
@@ -191,18 +192,16 @@ def analyze(chat: str | None, since: str | None, until: str | None, limit: int):
                         conditions.append(f"chat_name NOT IN ({placeholders})")
                     params.extend(chat_filter.chats)
 
-            # Time range filter
-            if since:
-                conditions.append("timestamp >= ?")
-                params.append(since)
-            if until:
-                conditions.append("timestamp <= ?")
-                params.append(until)
+            add_time_filters(conditions, params, "timestamp", since, until)
 
             where = " AND ".join(conditions)
             sql = f"""SELECT id, chat_id, chat_name, sender_name, content, msg_type, timestamp
-                      FROM messages {'WHERE ' + where if where else ''}
-                      ORDER BY timestamp DESC LIMIT ?"""
+                      FROM (
+                          SELECT id, chat_id, chat_name, sender_name, content, msg_type, timestamp
+                          FROM messages {'WHERE ' + where if where else ''}
+                          ORDER BY timestamp DESC LIMIT ?
+                      )
+                      ORDER BY timestamp ASC"""
             params.append(limit)
             rows = await db.execute_fetchall(sql, params)
 
@@ -232,7 +231,7 @@ def analyze(chat: str | None, since: str | None, until: str | None, limit: int):
 
         if knowledge_items:
             from app.services.knowledge import save_knowledge_items
-            async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+            async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
                 await save_knowledge_items(db, knowledge_items)
                 await db.commit()
 
@@ -280,9 +279,10 @@ def search(keyword: str, platform: str | None, category: str | None, since: str 
     """搜索消息"""
     import aiosqlite
     from app.core.database import DB_PATH
+    from app.core.time_utils import add_time_filters
 
     async def _run():
-        async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
             db.row_factory = aiosqlite.Row
 
             conditions = ["m.content LIKE ?"]
@@ -294,12 +294,7 @@ def search(keyword: str, platform: str | None, category: str | None, since: str 
             if category:
                 conditions.append("a.category = ?")
                 params.append(category)
-            if since:
-                conditions.append("m.timestamp >= ?")
-                params.append(since)
-            if until:
-                conditions.append("m.timestamp <= ?")
-                params.append(until)
+            add_time_filters(conditions, params, "m.timestamp", since, until)
 
             where = " AND ".join(conditions)
             query = f"""

@@ -30,12 +30,13 @@ async def confirm_analysis(task_id: str, body: ConfirmRequest):
     if task_id not in _pending_results:
         raise HTTPException(404, "分析结果不存在或已过期")
 
-    results = _pending_results.pop(task_id)
+    results = _pending_results[task_id]
     save_indices = set(body.ids)
     to_save = [r for i, r in enumerate(results) if i in save_indices]
 
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         await save_knowledge_items(db, to_save)
         await db.commit()
 
+    _pending_results.pop(task_id, None)
     return {"saved": len(to_save), "skipped": len(results) - len(to_save)}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import {
   fetchAPI,
@@ -36,9 +36,22 @@ export function TelegramCard() {
   const [qrSecondsLeft, setQrSecondsLeft] = useState(0)
   const qrPollRef = useRef<number | null>(null)
   const stepRef = useRef<Step>("idle")
-  stepRef.current = step
 
-  useEffect(() => { void refresh() }, [])
+  const refresh = useCallback(async () => {
+    try {
+      const s = await fetchAPI<TelegramStatus>("/telegram/status")
+      setStatus(s)
+      setStep(s.logged_in ? "done" : "idle")
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    }
+  }, [])
+
+  useEffect(() => { stepRef.current = step }, [step])
+  useEffect(() => {
+    const id = window.setTimeout(() => { void refresh() }, 0)
+    return () => window.clearTimeout(id)
+  }, [refresh])
 
   // Stop polling on unmount or whenever we leave the QR step.
   useEffect(() => {
@@ -62,16 +75,6 @@ export function TelegramCard() {
     const id = window.setInterval(tick, 1000)
     return () => window.clearInterval(id)
   }, [step, qrExpiresAt])
-
-  const refresh = async () => {
-    try {
-      const s = await fetchAPI<TelegramStatus>("/telegram/status")
-      setStatus(s)
-      setStep(s.logged_in ? "done" : "idle")
-    } catch (e) {
-      toast.error(getErrorMessage(e))
-    }
-  }
 
   const startSmsLogin = async () => {
     setBusy(true)

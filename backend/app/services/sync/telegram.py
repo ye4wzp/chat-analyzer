@@ -4,6 +4,7 @@ from pathlib import Path
 import aiosqlite
 
 from app.core.database import DB_PATH
+from app.core.time_utils import normalize_timestamp
 
 
 async def import_telegram_json(file_path: str) -> dict:
@@ -38,7 +39,7 @@ async def _import_full_export(chat_list: list[dict]) -> dict:
     total_imported = 0
     total_raw = 0
 
-    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
         for chat in chat_list:
             chat_name = chat.get("name", "")
             chat_id = str(chat.get("id", f"tg_{chat_name}"))
@@ -51,7 +52,7 @@ async def _import_full_export(chat_list: list[dict]) -> dict:
                     continue
 
                 content = _extract_content(msg)
-                ts = msg.get("date")
+                ts = normalize_timestamp(msg.get("date"))
                 sender_id = str(msg.get("from_id", msg.get("actor_id", "")))
                 sender_name = str(msg.get("from", msg.get("actor", "")))
                 msg_type = _map_msg_type(msg.get("media_type"), msg.get("type"), msg.get("sticker_emoji"))

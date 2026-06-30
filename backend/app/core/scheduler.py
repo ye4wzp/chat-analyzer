@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta
 
 from app.core.config import load_config, save_config
-from app.core.runners import run_analyze, run_qq_sync, run_sync, run_telegram_sync
+from app.core.runners import run_analyze, run_qq_sync, run_sync, run_tag_batch, run_telegram_sync
 from app.core.tasks import create_task, is_task_running, spawn_cancellable
 from app.models.analyze import AnalyzeRequest
 
@@ -50,6 +50,15 @@ async def scheduler_loop():
                     spawn_cancellable(task_id, run_analyze(task_id, AnalyzeRequest()))
                     cfg = load_config()
                     cfg.scheduler.last_analyze_at = now.isoformat()
+                    save_config(cfg)
+
+            if s.tag_enabled and s.tag_interval_minutes > 0 and not is_task_running("tag"):
+                last = datetime.fromisoformat(s.last_tag_at) if s.last_tag_at else None
+                if not last or now >= last + timedelta(minutes=s.tag_interval_minutes):
+                    task_id = create_task("tag")
+                    spawn_cancellable(task_id, run_tag_batch(task_id, False, True, 100, None))
+                    cfg = load_config()
+                    cfg.scheduler.last_tag_at = now.isoformat()
                     save_config(cfg)
         except Exception as e:
             logging.warning("scheduler loop error: %s", e)

@@ -193,6 +193,10 @@ export interface SchedulerStatus {
   analyze_interval_minutes: number
   last_analyze_at: string | null
   next_analyze_at: string | null
+  tag_enabled: boolean
+  tag_interval_minutes: number
+  last_tag_at: string | null
+  next_tag_at: string | null
 }
 
 export interface TelegramStatus {
@@ -251,6 +255,71 @@ export interface QQLauncherStatus {
   qce_url: string
   token_captured: boolean
   qq_enabled: boolean
+}
+
+export interface ContactTag {
+  id: number
+  name: string
+  color: string | null
+  source: string  // 'preset' | 'ai'
+  status: string  // 'active' | 'pending'
+  created_at: string
+  confirmed_count: number
+  suggested_count: number
+}
+
+export interface TagSuggestion {
+  link_id: number
+  platform: string
+  chat_id: string
+  confidence: number
+  reason: string
+  batch_id: string
+  created_at: string
+  tag_id: number
+  tag_name: string
+  tag_status: string
+  contact_name: string | null
+}
+
+export interface ContactTagLink {
+  link_id: number
+  confidence: number | null
+  reason: string | null
+  source: string
+  status: string  // 'suggested' | 'confirmed'
+  batch_id: string | null
+  tag_id: number
+  name: string
+  color: string | null
+}
+
+export interface ContactTagEntry {
+  platform: string
+  chat_id: string
+  tag_id: number
+  name: string
+  color: string | null
+}
+
+export interface TodoItem {
+  id: number
+  urgency: number
+  summary: string
+  action_items: string[]
+  done: boolean
+  analyzed_at: string
+  platform: string
+  chat_id: string
+  chat_name: string
+  content: string
+  timestamp: string
+}
+
+export interface TodoStats {
+  total: number
+  open: number
+  urgent: number
 }
 
 export function getErrorMessage(error: unknown): string {

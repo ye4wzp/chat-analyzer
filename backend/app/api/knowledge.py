@@ -29,7 +29,7 @@ async def embed_status():
     from app.core.config import load_config
     cfg = load_config()
     model = cfg.llm.embedding_model
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         total_row = await db.execute_fetchall("SELECT COUNT(*) AS n FROM knowledge_items")
         total = int(total_row[0]["n"]) if total_row else 0
@@ -52,9 +52,12 @@ async def embed_status():
 async def extend_knowledge(item_id: int):
     from app.services.analyzer import AnalyzerService
 
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
-        rows = await db.execute_fetchall("SELECT * FROM knowledge_items WHERE id=?", (item_id,))
+        rows = await db.execute_fetchall(
+            """SELECT id, title, content, source_chat, source_message_ids,
+                      tags, extended_content, batch_id, created_at
+               FROM knowledge_items WHERE id=?""", (item_id,))
         if not rows:
             raise HTTPException(404, "知识点不存在")
         item = dict(rows[0])
@@ -62,7 +65,7 @@ async def extend_knowledge(item_id: int):
     svc = AnalyzerService()
     extended = await svc.extend_knowledge(item)
 
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         await db.execute("UPDATE knowledge_items SET extended_content=? WHERE id=?", (extended, item_id))
         await db.commit()
 
@@ -76,7 +79,7 @@ async def related_items(item_id: int, limit: int = 3):
     keyword fallback)."""
     from app.services.embedder import deserialize_vec, cosine
 
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         target_rows = await db.execute_fetchall(
             "SELECT * FROM knowledge_items WHERE id=?", (item_id,)
@@ -121,7 +124,7 @@ async def list_knowledge(
       `limit` (offset honored). Returns 0 results if no items are embedded yet —
       callers should surface "请先到 Knowledge 页点'索引'" in that case.
     """
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
 
         if q and mode == "semantic":
@@ -166,7 +169,7 @@ async def list_knowledge(
 
 @router.delete("/api/knowledge/{item_id}")
 async def delete_knowledge(item_id: int):
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         await db.execute("DELETE FROM knowledge_items WHERE id=?", (item_id,))
         await db.commit()
     return {"ok": True}
@@ -184,7 +187,7 @@ async def update_knowledge(item_id: int, body: KnowledgeUpdateRequest):
     if not updates:
         raise HTTPException(400, "No fields to update")
     set_clause = ", ".join(f"{k}=?" for k in updates)
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         await db.execute(f"UPDATE knowledge_items SET {set_clause} WHERE id=?", [*updates.values(), item_id])
         await db.commit()
     return {"ok": True}
@@ -192,9 +195,13 @@ async def update_knowledge(item_id: int, body: KnowledgeUpdateRequest):
 
 @router.get("/api/knowledge/export")
 async def export_knowledge(fmt: str = "markdown"):
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
-        rows = await db.execute_fetchall("SELECT * FROM knowledge_items ORDER BY created_at DESC")
+        rows = await db.execute_fetchall(
+            """SELECT id, title, content, source_chat, source_message_ids,
+                      tags, extended_content, batch_id, created_at
+               FROM knowledge_items ORDER BY created_at DESC"""
+        )
     items = [dict(r) for r in rows]
 
     if fmt == "json":

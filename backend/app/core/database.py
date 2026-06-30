@@ -1,9 +1,10 @@
 import aiosqlite
-from pathlib import Path
 
 from app.core.config import DATA_DIR
+from app.core.time_utils import normalize_timestamp
 
 DB_PATH = DATA_DIR / "chat.db"
+TIMESTAMP_MIGRATION_BATCH_SIZE = 5000
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -121,18 +122,85 @@ CREATE TABLE IF NOT EXISTS keyword_scan_state (
 );
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_batch ON knowledge_items(batch_id);
+
+-- Contact tag dictionary. Tags are platform-agnostic and reusable across
+-- contacts. source='preset' are user-defined; source='ai' are LLM-proposed
+-- new tags that stay status='pending' until the user approves them (flipped to
+-- 'active' on first confirm). Only 'active' tags are offered to the LLM.
+CREATE TABLE IF NOT EXISTS contact_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    color TEXT,
+    source TEXT DEFAULT 'preset',   -- 'preset' | 'ai'
+    status TEXT DEFAULT 'active',   -- 'active' | 'pending'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tag <-> contact assignment, keyed on (platform, chat_id) like chat_profiles.
+-- AI suggestions land as status='suggested'; the review step flips selected
+-- rows to 'confirmed'. Manual adds go straight to 'confirmed'.
+CREATE TABLE IF NOT EXISTS contact_tag_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    tag_id INTEGER NOT NULL REFERENCES contact_tags(id) ON DELETE CASCADE,
+    confidence REAL,
+    reason TEXT,
+    source TEXT DEFAULT 'ai',        -- 'ai' | 'manual'
+    status TEXT DEFAULT 'suggested', -- 'suggested' | 'confirmed'
+    batch_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(platform, chat_id, tag_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tag_links_contact ON contact_tag_links(platform, chat_id);
+CREATE INDEX IF NOT EXISTS idx_tag_links_status ON contact_tag_links(status);
 """
 
 
 async def get_db() -> aiosqlite.Connection:
-    db = await aiosqlite.connect(str(DB_PATH), timeout=30)
+    db = await aiosqlite.connect(str(DB_PATH), timeout=60)
     db.row_factory = aiosqlite.Row
+    # Ensure WAL mode on every connection (idempotent, persists in file).
+    # busy_timeout tells SQLite to retry for N ms before raising "database is locked".
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA synchronous=NORMAL")
+    await db.execute("PRAGMA busy_timeout=30000")
     return db
+
+
+class connect_db:
+    """Async context manager for DB connections with WAL + busy_timeout.
+
+    Usage:
+        async with connect_db() as db:
+            ...
+
+    All sync services should use this instead of raw aiosqlite.connect().
+    """
+
+    def __init__(self, *, row_factory: bool = True, timeout: float = 60):
+        self._row_factory = row_factory
+        self._timeout = timeout
+        self._db: aiosqlite.Connection | None = None
+
+    async def __aenter__(self) -> aiosqlite.Connection:
+        self._db = await aiosqlite.connect(str(DB_PATH), timeout=self._timeout)
+        if self._row_factory:
+            self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA synchronous=NORMAL")
+        await self._db.execute("PRAGMA busy_timeout=30000")
+        return self._db
+
+    async def __aexit__(self, *exc: object) -> None:
+        if self._db:
+            await self._db.close()
 
 
 async def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
         # WAL lets concurrent syncs (wechat + qq + telegram) write without
         # tripping over each other's locks. Set once; persists in the file.
         await db.execute("PRAGMA journal_mode=WAL")
@@ -147,6 +215,9 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
     message_columns = {row[1] for row in columns}
     if "source_id" not in message_columns:
         await db.execute("ALTER TABLE messages ADD COLUMN source_id TEXT")
+
+    await _normalize_existing_timestamps(db, "messages", "timestamp")
+    await _normalize_existing_timestamps(db, "sync_state", "last_timestamp")
 
     await db.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_unique_source
@@ -171,6 +242,12 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_message ON analysis_results(message_id)"
     )
 
+    # analysis_results.done: 0/1 completion flag for the todo board. Only
+    # category='todo' rows are surfaced there; default 0 = open.
+    analysis_columns = await db.execute_fetchall("PRAGMA table_info(analysis_results)")
+    if "done" not in {row[1] for row in analysis_columns}:
+        await db.execute("ALTER TABLE analysis_results ADD COLUMN done INTEGER DEFAULT 0")
+
     # knowledge_items.embedding: BLOB holding numpy float32 array, populated by
     # services/embedder.py. NULL = not yet indexed.
     knowledge_columns = await db.execute_fetchall("PRAGMA table_info(knowledge_items)")
@@ -179,3 +256,29 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
     if "embedding_model" not in {row[1] for row in knowledge_columns}:
         # Track which model produced the vector — re-embed on model change.
         await db.execute("ALTER TABLE knowledge_items ADD COLUMN embedding_model TEXT")
+
+
+async def _normalize_existing_timestamps(db: aiosqlite.Connection, table: str, column: str) -> None:
+    rows = await db.execute_fetchall(
+        f"""SELECT rowid, {column} AS ts
+            FROM {table}
+            WHERE {column} IS NOT NULL
+              AND (
+                  CAST({column} AS TEXT) NOT GLOB '????-??-??T??:??:??*'
+                  OR CAST({column} AS TEXT) GLOB '*Z'
+                  OR CAST({column} AS TEXT) GLOB '*+??:??'
+                  OR CAST({column} AS TEXT) GLOB '*-??:??'
+              )
+            ORDER BY rowid
+            LIMIT ?""",
+        (TIMESTAMP_MIGRATION_BATCH_SIZE,),
+    )
+    for row in rows:
+        raw = row["ts"] if isinstance(row, aiosqlite.Row) else row[1]
+        normalized = normalize_timestamp(raw)
+        if normalized and normalized != raw:
+            rowid = row["rowid"] if isinstance(row, aiosqlite.Row) else row[0]
+            await db.execute(
+                f"UPDATE {table} SET {column}=? WHERE rowid=?",
+                (normalized, rowid),
+            )

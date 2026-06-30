@@ -125,7 +125,7 @@ async def embed_all_knowledge(progress: ProgressCB | None = None) -> dict:
             await rv  # type: ignore[func-returns-value]
 
     await _emit(5, "扫描待 embed 的知识点...")
-    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
             """SELECT id, title, content
@@ -154,7 +154,7 @@ async def embed_all_knowledge(progress: ProgressCB | None = None) -> dict:
             f"embed {i+1}-{min(i+BATCH, total)}/{total}...",
         )
         vecs = await embed_batch(texts, model)
-        async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
             for row, vec in zip(batch, vecs):
                 if vec is None:
                     failed += 1

@@ -7,6 +7,7 @@ import aiosqlite
 
 from app.core.database import get_db, DB_PATH
 from app.core.config import ensure_dirs
+from app.core.time_utils import normalize_timestamp
 
 
 async def _run_wx(*args: str) -> str:
@@ -23,15 +24,7 @@ async def _run_wx(*args: str) -> str:
 
 
 def _parse_ts(ts_str: str | int | None) -> str | None:
-    if not ts_str:
-        return None
-    if isinstance(ts_str, int):
-        return datetime.fromtimestamp(ts_str).isoformat()
-    try:
-        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        return dt.isoformat()
-    except (ValueError, AttributeError):
-        return str(ts_str)
+    return normalize_timestamp(ts_str)
 
 
 def _source_id(msg: dict, chat_id: str, ts: str, content: str) -> str:
@@ -53,20 +46,36 @@ async def sync_sessions() -> int:
     ensure_dirs()
     total = 0
 
-    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
-        for session in sessions:
-            chat_name = session.get("chat") or session.get("name") or session.get("nickname") or ""
-            chat_id = session.get("username") or session.get("chat_id") or ""
+    for session in sessions:
+        chat_name = session.get("chat") or session.get("name") or session.get("nickname") or ""
+        chat_id = session.get("username") or session.get("chat_id") or ""
 
-            if not chat_id:
-                continue
+        if not chat_id:
+            continue
 
-            # Pull messages for this session
-            count = await _sync_chat_history(db, chat_id, chat_name)
-            total += count
-            # Commit per chat so a long history sync doesn't hold the WAL
-            # writer lock against parallel QQ/Telegram syncs.
-            await db.commit()
+        # Each chat gets its own short-lived connection to minimize lock hold time.
+        # Retry on database-locked errors since parallel syncs may be writing.
+        retries = 3
+        for attempt in range(retries):
+            try:
+                async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
+                    await db.execute("PRAGMA journal_mode=WAL")
+                    await db.execute("PRAGMA busy_timeout=60000")
+                    count = await _sync_chat_history(db, chat_id, chat_name)
+                    await db.commit()
+                    total += count
+                break  # success
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "locked" in err_msg and attempt < retries - 1:
+                    import logging
+                    logging.warning("wechat sync locked for %s, retry %d/%d",
+                                    chat_name or chat_id, attempt + 1, retries)
+                    await asyncio.sleep(3 * (attempt + 1))
+                    continue
+                import logging
+                logging.warning("wechat sync failed for %s: %s", chat_name or chat_id, e)
+                break
 
     return total
 
@@ -163,37 +172,52 @@ async def sync_new_messages() -> int:
     ensure_dirs()
     inserted = 0
 
-    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
-        for msg in messages:
-            ts = _parse_ts(msg.get("timestamp") or msg.get("time") or msg.get("created_at"))
-            chat_id = msg.get("username") or msg.get("chat_id") or ""
-            chat_name = msg.get("chat") or msg.get("chat_name") or msg.get("name") or ""
+    retries = 3
+    for attempt in range(retries):
+        try:
+            async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
+                await db.execute("PRAGMA journal_mode=WAL")
+                await db.execute("PRAGMA busy_timeout=60000")
+                for msg in messages:
+                    ts = _parse_ts(msg.get("timestamp") or msg.get("time") or msg.get("created_at"))
+                    chat_id = msg.get("username") or msg.get("chat_id") or ""
+                    chat_name = msg.get("chat") or msg.get("chat_name") or msg.get("name") or ""
 
-            if not chat_id or not ts:
+                    if not chat_id or not ts:
+                        continue
+
+                    content = msg.get("content") or msg.get("text") or ""
+                    cursor = await db.execute(
+                        """INSERT OR IGNORE INTO messages
+                           (platform, chat_id, chat_name, chat_type, sender_id, sender_name,
+                            content, msg_type, timestamp, source_id, raw_data)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            "wechat",
+                            chat_id,
+                            chat_name,
+                            "group" if chat_id.endswith("@chatroom") else "private",
+                            msg.get("sender_id") or msg.get("talker") or "",
+                            msg.get("sender") or msg.get("sender_name") or msg.get("nickname") or "",
+                            content,
+                            msg.get("type", "text"),
+                            ts,
+                            _source_id(msg, chat_id, ts, content),
+                            json.dumps(msg, ensure_ascii=False),
+                        ),
+                    )
+                    inserted += max(cursor.rowcount, 0)
+
+                await db.commit()
+            break  # success
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "locked" in err_msg and attempt < retries - 1:
+                import logging
+                logging.warning("wechat sync_new locked, retry %d/%d", attempt + 1, retries)
+                await asyncio.sleep(3 * (attempt + 1))
+                inserted = 0  # reset count for retry
                 continue
-
-            content = msg.get("content") or msg.get("text") or ""
-            cursor = await db.execute(
-                """INSERT OR IGNORE INTO messages
-                   (platform, chat_id, chat_name, chat_type, sender_id, sender_name,
-                    content, msg_type, timestamp, source_id, raw_data)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    "wechat",
-                    chat_id,
-                    chat_name,
-                    "group" if chat_id.endswith("@chatroom") else "private",
-                    msg.get("sender_id") or msg.get("talker") or "",
-                    msg.get("sender") or msg.get("sender_name") or msg.get("nickname") or "",
-                    content,
-                    msg.get("type", "text"),
-                    ts,
-                    _source_id(msg, chat_id, ts, content),
-                    json.dumps(msg, ensure_ascii=False),
-                ),
-            )
-            inserted += max(cursor.rowcount, 0)
-
-        await db.commit()
+            raise
 
     return inserted

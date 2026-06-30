@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 import { fetchAPI, getErrorMessage } from "@/lib/api"
@@ -29,7 +29,7 @@ export default function Inbox() {
   const [scanning, setScanning] = useState(false)
   const navigate = useNavigate()
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setLoading(true)
     try {
       const data = await fetchAPI<TriggerRow[]>(`/inbox?only_unread=${onlyUnread}&limit=200`)
@@ -39,9 +39,9 @@ export default function Inbox() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [onlyUnread])
 
-  useEffect(() => { void refresh() }, [onlyUnread])
+  useEffect(() => { void refresh() }, [refresh])
 
   const scan = async () => {
     setScanning(true)
@@ -76,7 +76,7 @@ export default function Inbox() {
 
   const goto = (item: TriggerRow) => {
     void markRead(item.id)
-    navigate(`/chats?chat=${encodeURIComponent(item.chat_name)}`)
+    navigate(`/chats?platform=${encodeURIComponent(item.platform)}&chat_id=${encodeURIComponent(item.chat_id)}`)
   }
 
   return (

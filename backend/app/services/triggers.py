@@ -53,7 +53,8 @@ async def scan_for_matches(*, notify: bool = True) -> int:
 
     new_triggers: list[tuple[str, int, str]] = []  # (keyword, message_id, content_preview)
 
-    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
+        await db.execute("PRAGMA busy_timeout=30000")
         db.row_factory = aiosqlite.Row
         max_row = await db.execute_fetchall("SELECT COALESCE(MAX(id), 0) AS m FROM messages")
         global_max = int(max_row[0]["m"]) if max_row else 0
@@ -116,7 +117,8 @@ async def scan_for_matches(*, notify: bool = True) -> int:
 async def rescan_keyword(keyword: str) -> int:
     """Reset scan_state for a keyword and rescan from scratch. Used when the
     user wants historical matches for a freshly-edited rule."""
-    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
+        await db.execute("PRAGMA busy_timeout=30000")
         await db.execute("DELETE FROM keyword_scan_state WHERE keyword = ?", (keyword,))
         await db.execute("DELETE FROM keyword_triggers WHERE keyword = ?", (keyword,))
         await db.commit()

@@ -36,6 +36,10 @@ async def get_scheduler():
         "analyze_interval_minutes": s.analyze_interval_minutes,
         "last_analyze_at": s.last_analyze_at,
         "next_analyze_at": _next_run(s.last_analyze_at, s.analyze_interval_minutes) if s.analyze_enabled else None,
+        "tag_enabled": s.tag_enabled,
+        "tag_interval_minutes": s.tag_interval_minutes,
+        "last_tag_at": s.last_tag_at,
+        "next_tag_at": _next_run(s.last_tag_at, s.tag_interval_minutes) if s.tag_enabled else None,
     }
 
 
@@ -74,5 +78,11 @@ async def update_scheduler(body: SchedulerUpdate):
         s.telegram_enabled = body.telegram_enabled
     if body.telegram_interval_minutes is not None:
         s.telegram_interval_minutes = body.telegram_interval_minutes
+    if body.tag_enabled is not None:
+        if _flip_on(s.tag_enabled, body.tag_enabled):
+            s.last_tag_at = now_iso
+        s.tag_enabled = body.tag_enabled
+    if body.tag_interval_minutes is not None:
+        s.tag_interval_minutes = body.tag_interval_minutes
     save_config(cfg)
     return await get_scheduler()

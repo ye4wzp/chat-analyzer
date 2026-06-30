@@ -4,6 +4,7 @@ import aiosqlite
 from fastapi import APIRouter
 
 from app.core import database
+from app.core.time_utils import add_time_filters
 
 router = APIRouter()
 
@@ -27,16 +28,11 @@ async def search(
     if category:
         conditions.append("a.category = ?")
         params.append(category)
-    if since:
-        conditions.append("m.timestamp >= ?")
-        params.append(since)
-    if until:
-        conditions.append("m.timestamp <= ?")
-        params.append(until)
+    add_time_filters(conditions, params, "m.timestamp", since, until)
 
     where = " AND ".join(conditions)
 
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
             f"""SELECT m.*, a.category, a.urgency, a.summary

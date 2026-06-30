@@ -5,6 +5,7 @@ from pathlib import Path
 import aiosqlite
 
 from app.core.database import DB_PATH
+from app.core.time_utils import normalize_timestamp
 
 
 async def import_qq_json(file_path: str) -> dict:
@@ -81,7 +82,8 @@ async def _import_chats(chats: list[dict]) -> dict:
     total = 0
     imported = 0
 
-    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
+        await db.execute("PRAGMA busy_timeout=30000")
         for chat in chats:
             chat_id = str(chat["chat_id"])
             chat_name = str(chat["chat_name"])
@@ -156,9 +158,7 @@ def _content(msg: dict) -> str:
 
 def _timestamp(msg: dict) -> str | None:
     value = msg.get("timestamp") or msg.get("time") or msg.get("date") or msg.get("datetime")
-    if value is None:
-        return None
-    return str(value)
+    return normalize_timestamp(value)
 
 
 def _source_id(msg: dict, chat_id: str, timestamp: str, sender_id: str, content: str) -> str:

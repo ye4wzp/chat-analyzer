@@ -14,8 +14,12 @@ def _redact(data: dict) -> dict:
         data["llm"]["api_key"] = "********"
     if data.get("qq", {}).get("token"):
         data["qq"]["token"] = "********"
-    if data.get("telegram", {}).get("session_string"):
-        data["telegram"]["session_string"] = "********"
+    if data.get("qq", {}).get("uin"):
+        data["qq"]["uin"] = "********"
+    telegram = data.get("telegram", {})
+    for key in ("api_hash", "phone", "session_string"):
+        if telegram.get(key):
+            telegram[key] = "********"
     return data
 
 
@@ -80,8 +84,12 @@ async def update_config(body: ConfigUpdate):
 @router.get("/api/llm/models")
 async def get_llm_models():
     cfg = load_config()
-    if cfg.llm.provider != "openai_compatible":
+    if cfg.llm.provider == "claude_cli":
         return {"provider": "claude_cli", "models": []}
+    if cfg.llm.provider == "codex_cli":
+        # Codex defaults to its bundled model list (gpt-5.5 etc); user can override
+        # via -m. We surface the common ones for convenience.
+        return {"provider": "codex_cli", "models": ["gpt-5.5", "gpt-5", "o4-mini", "o3"]}
     url = cfg.llm.api_url.replace("localhost", "127.0.0.1")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -100,8 +108,11 @@ async def get_llm_models():
 @router.get("/api/llm/test")
 async def test_llm_connection():
     cfg = load_config()
-    if cfg.llm.provider != "openai_compatible":
-        return {"status": "ok", "provider": "claude_cli"}
+    if cfg.llm.provider == "claude_cli":
+        # Verify claude binary is callable; --version is fast and side-effect-free.
+        return await _test_cli_binary("claude", "claude_cli")
+    if cfg.llm.provider == "codex_cli":
+        return await _test_cli_binary("codex", "codex_cli")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
@@ -114,6 +125,28 @@ async def test_llm_connection():
         raise HTTPException(502, f"连接失败: {e}")
 
 
+async def _test_cli_binary(binary: str, provider_label: str) -> dict:
+    """Verify that a CLI tool (claude / codex) is on PATH and runs."""
+    import asyncio as _asyncio
+    try:
+        proc = await _asyncio.create_subprocess_exec(
+            binary, "--version",
+            stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await _asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode != 0:
+            raise HTTPException(502, f"{binary} --version 失败: {stderr.decode()[:200]}")
+        return {
+            "status": "ok",
+            "provider": provider_label,
+            "version": stdout.decode().strip().splitlines()[0] if stdout else "",
+        }
+    except FileNotFoundError:
+        raise HTTPException(502, f"未找到 {binary} 命令，请先安装")
+    except Exception as e:
+        raise HTTPException(502, f"{binary} 测试失败: {e}")
+
+
 @router.get("/api/llm/usage")
 async def get_llm_usage():
     """LLM token usage stats: today's total + last 7 days + per-purpose split.
@@ -121,7 +154,7 @@ async def get_llm_usage():
     Powers the Dashboard budget card. Computed from llm_usage table at request time
     so it's always consistent with the actual writes."""
     cfg = load_config()
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         today_row = await db.execute_fetchall(
             """SELECT

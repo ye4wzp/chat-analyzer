@@ -358,7 +358,8 @@ async def sync_all(progress: ProgressCB | None = None) -> dict[str, int]:
     total_imported = 0
     chats_done = 0
 
-    async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
+        await db.execute("PRAGMA busy_timeout=30000")
         for i, dialog in enumerate(dialogs):
             chat_id = str(dialog.id)
             chat_type, chat_name = _chat_kind(dialog.entity)

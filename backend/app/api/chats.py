@@ -8,7 +8,7 @@ router = APIRouter()
 
 @router.get("/api/chats")
 async def get_chats():
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
             """SELECT platform, chat_id, chat_name, chat_type,
@@ -54,7 +54,7 @@ async def chat_profile(platform: str, chat_id: str):
     Caller can render: hourly activity sparkline, top senders, urgency mix,
     knowledge items sourced from this chat, and the LLM-generated 1-paragraph
     description (if previously cached via POST /summarize)."""
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
 
         meta_rows = await db.execute_fetchall(
@@ -145,7 +145,7 @@ async def summarize_chat(platform: str, chat_id: str):
     For very large chats we cap the input at the most recent 100 messages."""
     from app.services.analyzer import AnalyzerService
 
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
             """SELECT id, sender_name, content, timestamp
@@ -162,7 +162,7 @@ async def summarize_chat(platform: str, chat_id: str):
     if not summary:
         raise HTTPException(502, f"LLM 未返回内容: {svc.last_llm_error or '未知错误'}")
 
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         await db.execute(
             """INSERT INTO chat_profiles (platform, chat_id, summary, summary_generated_at)
                VALUES (?, ?, ?, CURRENT_TIMESTAMP)

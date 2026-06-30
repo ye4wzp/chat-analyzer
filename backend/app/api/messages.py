@@ -4,6 +4,7 @@ import aiosqlite
 from fastapi import APIRouter
 
 from app.core import database
+from app.core.time_utils import add_time_filters
 
 router = APIRouter()
 
@@ -11,6 +12,7 @@ router = APIRouter()
 @router.get("/api/messages")
 async def get_messages(
     platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
     chat: Optional[str] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
@@ -25,15 +27,13 @@ async def get_messages(
     if platform:
         conditions.append("m.platform = ?")
         params.append(platform)
-    if chat:
+    if chat_id:
+        conditions.append("m.chat_id = ?")
+        params.append(chat_id)
+    elif chat:
         conditions.append("m.chat_name LIKE ?")
         params.append(f"%{chat}%")
-    if since:
-        conditions.append("m.timestamp >= ?")
-        params.append(since)
-    if until:
-        conditions.append("m.timestamp <= ?")
-        params.append(until)
+    add_time_filters(conditions, params, "m.timestamp", since, until)
     if category:
         conditions.append("a.category = ?")
         params.append(category)
@@ -43,7 +43,7 @@ async def get_messages(
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
             f"""SELECT m.*, a.category, a.urgency, a.summary

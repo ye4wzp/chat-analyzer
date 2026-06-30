@@ -8,6 +8,8 @@ const Chats = lazy(() => import("@/pages/Chats"))
 const Timeline = lazy(() => import("@/pages/Timeline"))
 const Search = lazy(() => import("@/pages/Search"))
 const Knowledge = lazy(() => import("@/pages/Knowledge"))
+const Tags = lazy(() => import("@/pages/Tags"))
+const Todos = lazy(() => import("@/pages/Todos"))
 const Inbox = lazy(() => import("@/pages/Inbox"))
 const Settings = lazy(() => import("@/pages/Settings"))
 
@@ -30,6 +32,8 @@ export default function App() {
             <Route path="timeline" element={<Suspense fallback={<PageFallback />}><Timeline /></Suspense>} />
             <Route path="search" element={<Suspense fallback={<PageFallback />}><Search /></Suspense>} />
             <Route path="knowledge" element={<Suspense fallback={<PageFallback />}><Knowledge /></Suspense>} />
+            <Route path="tags" element={<Suspense fallback={<PageFallback />}><Tags /></Suspense>} />
+            <Route path="todos" element={<Suspense fallback={<PageFallback />}><Todos /></Suspense>} />
             <Route path="inbox" element={<Suspense fallback={<PageFallback />}><Inbox /></Suspense>} />
             <Route path="settings" element={<Suspense fallback={<PageFallback />}><Settings /></Suspense>} />
           </Route>

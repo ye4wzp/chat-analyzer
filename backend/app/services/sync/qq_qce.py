@@ -253,7 +253,8 @@ async def sync_all(progress: ProgressCB | None = None) -> dict:
             await _emit(100, "无聊天可同步")
             return {"chats": 0, "imported": 0, "skipped": []}
 
-        async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
+            await db.execute("PRAGMA busy_timeout=30000")
             for i, (kind, peer) in enumerate(targets):
                 pct = 15 + int(80 * i / len(targets))
                 _, name, _ = _chat_meta(kind=kind, peer=peer)

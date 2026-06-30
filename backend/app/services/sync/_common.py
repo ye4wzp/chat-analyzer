@@ -1,27 +1,16 @@
 """Shared helpers for platform sync services (qq_qce, telegram_live, ...)."""
 
-import hashlib
 import json
-from datetime import datetime, timezone
+import hashlib
 
 import aiosqlite
+
+from app.core.time_utils import normalize_timestamp
 
 
 def parse_ts(value: str | int | float | None) -> str | None:
     """Normalize a timestamp from any plausible source into ISO 8601."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, (int, float)):
-        ts = float(value)
-        # Heuristic: treat 13-digit values as milliseconds.
-        if ts > 1e12:
-            ts /= 1000
-        return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().isoformat()
-    s = str(value).strip()
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).isoformat()
-    except ValueError:
-        return s
+    return normalize_timestamp(value)
 
 
 def source_id(raw: object, *parts: object) -> str:

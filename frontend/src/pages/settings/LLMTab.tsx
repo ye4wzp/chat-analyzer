@@ -24,17 +24,23 @@ export function LLMTab({ provider, url, model, apiKey, embeddingModel, setProvid
   const [models, setModels] = useState<string[]>([])
   const [testResult, setTestResult] = useState<"idle" | "ok" | "fail">("idle")
 
+  const saveCurrentConfig = async () => {
+    await fetchAPI("/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        llm_provider: provider,
+        llm_api_url: url,
+        llm_model: model,
+        llm_api_key: apiKey === "********" ? undefined : apiKey,
+        llm_embedding_model: embeddingModel,
+      }),
+    })
+  }
+
   const fetchModels = async () => {
     try {
       // Save config first so backend uses the latest URL/key
-      await fetchAPI("/config", {
-        method: "PUT",
-        body: JSON.stringify({
-          llm_provider: provider,
-          llm_api_url: url,
-          llm_api_key: apiKey === "********" ? undefined : apiKey,
-        }),
-      })
+      await saveCurrentConfig()
       const res = await fetchAPI<LLMModelsResponse>("/llm/models")
       setModels(res.models)
       if (res.models.length > 0 && !model) setModel(res.models[0])
@@ -47,6 +53,7 @@ export function LLMTab({ provider, url, model, apiKey, embeddingModel, setProvid
   const testConnection = async () => {
     setTestResult("idle")
     try {
+      await saveCurrentConfig()
       await fetchAPI<{ status: string }>("/llm/test")
       setTestResult("ok")
     } catch {
@@ -62,6 +69,7 @@ export function LLMTab({ provider, url, model, apiKey, embeddingModel, setProvid
           <label className="text-xs text-muted-foreground">LLM 提供商</label>
           <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
             <option value="claude_cli">Claude Code CLI (claude -p)</option>
+            <option value="codex_cli">OpenAI Codex CLI (codex exec)</option>
             <option value="openai_compatible">OpenAI 兼容 API (LM Studio / Ollama)</option>
           </Select>
         </div>
@@ -109,16 +117,42 @@ export function LLMTab({ provider, url, model, apiKey, embeddingModel, setProvid
             </div>
             <div className="flex items-center gap-3">
               <Button variant="outline" size="sm" onClick={testConnection}>测试连接</Button>
-              {testResult === "ok" && <span className="flex items-center gap-1 text-sm text-green-400"><CheckCircle className="h-4 w-4" /> 连接成功</span>}
+              {testResult === "ok" && <span className="flex items-center gap-1 text-sm text-[var(--color-success)]"><CheckCircle className="h-4 w-4" /> 连接成功</span>}
               {testResult === "fail" && <span className="flex items-center gap-1 text-sm text-destructive"><AlertTriangle className="h-4 w-4" /> 连接失败</span>}
             </div>
           </>
         )}
 
         {provider === "claude_cli" && (
-          <p className="text-xs text-muted-foreground">
-            使用本地已认证的 Claude Code CLI，无需额外配置。确保 <code className="text-primary">claude</code> 命令可用。
-          </p>
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              使用本地已认证的 Claude Code CLI，无需额外配置。确保 <code className="text-primary">claude</code> 命令可用。
+            </p>
+            <div className="flex items-center gap-3">
+              <Button variant="outline" size="sm" onClick={testConnection}>测试 CLI</Button>
+              {testResult === "ok" && <span className="flex items-center gap-1 text-sm text-[var(--color-success)]"><CheckCircle className="h-4 w-4" /> 可用</span>}
+              {testResult === "fail" && <span className="flex items-center gap-1 text-sm text-destructive"><AlertTriangle className="h-4 w-4" /> 未找到 claude</span>}
+            </div>
+          </div>
+        )}
+
+        {provider === "codex_cli" && (
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              使用本地已登录的 OpenAI Codex CLI（<code className="text-primary">codex exec</code>）。
+              首次使用需运行 <code className="text-primary">codex login</code> 完成 OpenAI 认证。
+              留空模型则用 Codex 默认值。
+            </p>
+            <div className="max-w-md space-y-1">
+              <label className="text-xs text-muted-foreground">模型（可选）</label>
+              <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-5.5 / gpt-5 / o4-mini，留空则用默认" />
+            </div>
+            <div className="flex items-center gap-3">
+              <Button variant="outline" size="sm" onClick={testConnection}>测试 CLI</Button>
+              {testResult === "ok" && <span className="flex items-center gap-1 text-sm text-[var(--color-success)]"><CheckCircle className="h-4 w-4" /> 可用</span>}
+              {testResult === "fail" && <span className="flex items-center gap-1 text-sm text-destructive"><AlertTriangle className="h-4 w-4" /> 未找到 codex</span>}
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>

@@ -38,8 +38,8 @@ function Avatar({ name, platform }: { name: string; platform: string }) {
 
 interface FilterPanelProps {
   chats: ChatInfo[]
-  selectedChat: string
-  setSelectedChat: (v: string) => void
+  selectedChat: ChatInfo | null
+  setSelectedChat: (v: ChatInfo | null) => void
   platform: string
   setPlatform: (v: string) => void
   since: string
@@ -78,8 +78,8 @@ function FilterPanel({ chats, selectedChat, setSelectedChat, platform, setPlatfo
         {filtered.map(c => (
           <button
             key={`${c.platform}-${c.chat_id}`}
-            onClick={() => setSelectedChat(selectedChat === c.chat_name ? "" : c.chat_name)}
-            className={`flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors text-left ${selectedChat === c.chat_name ? "bg-[var(--color-primary)]/10 text-[var(--color-foreground)]" : "text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]"}`}
+            onClick={() => setSelectedChat(selectedChat?.platform === c.platform && selectedChat?.chat_id === c.chat_id ? null : c)}
+            className={`flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors text-left ${selectedChat?.platform === c.platform && selectedChat?.chat_id === c.chat_id ? "bg-[var(--color-primary)]/10 text-[var(--color-foreground)]" : "text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]"}`}
           >
             <span className="h-2 w-2 rounded-full shrink-0" style={{ background: PLATFORM_COLOR[c.platform] || "#6b7280" }} />
             <span className="truncate flex-1">{c.chat_name}</span>
@@ -94,7 +94,7 @@ function FilterPanel({ chats, selectedChat, setSelectedChat, platform, setPlatfo
 export default function Timeline() {
   const [chats, setChats] = useState<ChatInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
-  const [selectedChat, setSelectedChat] = useState("")
+  const [selectedChat, setSelectedChat] = useState<ChatInfo | null>(null)
   const [platform, setPlatform] = useState("")
   const [since, setSince] = useState("")
   const [until, setUntil] = useState("")
@@ -115,8 +115,12 @@ export default function Timeline() {
     setLoading(true)
     try {
       const params = new URLSearchParams({ limit: String(PAGE_SIZE) })
-      if (selectedChat) params.set("chat", selectedChat)
-      if (platform) params.set("platform", platform)
+      if (selectedChat) {
+        params.set("platform", selectedChat.platform)
+        params.set("chat_id", selectedChat.chat_id)
+      } else if (platform) {
+        params.set("platform", platform)
+      }
       if (since) params.set("since", since)
       if (until) params.set("until", until)
       if (append) params.set("offset", String(offsetRef.current))
@@ -160,7 +164,7 @@ export default function Timeline() {
       <div className="flex-1 overflow-y-auto p-4 md:p-6">
         <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
           <div className="text-sm text-[var(--color-muted-foreground)]">
-            {selectedChat ? <span className="font-medium text-[var(--color-foreground)]">{selectedChat}</span> : "全部聊天"}
+            {selectedChat ? <span className="font-medium text-[var(--color-foreground)]">{selectedChat.chat_name || selectedChat.chat_id}</span> : "全部聊天"}
             <span className="ml-2 tabular-nums">{messages.length} 条消息</span>
           </div>
           <button

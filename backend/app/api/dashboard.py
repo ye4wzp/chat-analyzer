@@ -8,7 +8,7 @@ router = APIRouter()
 
 @router.get("/api/dashboard")
 async def dashboard():
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
 
         total = await db.execute_fetchall("SELECT COUNT(*) as c FROM messages")
@@ -25,7 +25,9 @@ async def dashboard():
         )
 
         recent = await db.execute_fetchall(
-            "SELECT * FROM knowledge_items ORDER BY created_at DESC LIMIT 10"
+            """SELECT id, title, content, source_chat, source_message_ids,
+                      tags, extended_content, batch_id, created_at
+               FROM knowledge_items ORDER BY created_at DESC LIMIT 10"""
         )
 
         daily = await db.execute_fetchall(

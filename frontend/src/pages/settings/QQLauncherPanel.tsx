@@ -121,14 +121,14 @@ export function QQLauncherPanel({ onConfigChange }: Props) {
   const containerRunning = status.container === "running"
   const containerExists = status.container !== null
 
-  // Status badge
-  let badge = <Badge variant="idle">未就绪</Badge>
-  if (!docker.daemon) badge = <Badge variant="error">Docker 未运行</Badge>
-  else if (!status.installed) badge = <Badge variant="warn">待安装</Badge>
-  else if (!containerExists) badge = <Badge variant="idle">未启动</Badge>
-  else if (containerRunning && status.token_captured) badge = <Badge variant="ok">运行中</Badge>
-  else if (containerRunning) badge = <Badge variant="warn">等待扫码</Badge>
-  else badge = <Badge variant="idle">已停止</Badge>
+  const badge = (() => {
+    if (!docker.daemon) return <Badge variant="error">Docker 未运行</Badge>
+    if (!status.installed) return <Badge variant="warn">待安装</Badge>
+    if (!containerExists) return <Badge variant="idle">未启动</Badge>
+    if (containerRunning && status.token_captured) return <Badge variant="ok">运行中</Badge>
+    if (containerRunning) return <Badge variant="warn">等待扫码</Badge>
+    return <Badge variant="idle">已停止</Badge>
+  })()
 
   return (
     <div className="space-y-3">

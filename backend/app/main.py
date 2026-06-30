@@ -19,8 +19,10 @@ from app.api import (
     search,
     static,
     sync,
+    tags,
     tasks,
     telegram,
+    todos,
 )
 from app.core.database import DB_PATH, init_db
 from app.core.scheduler import scheduler_loop
@@ -55,7 +57,7 @@ app.add_middleware(
 
 for module in (
     dashboard, messages, chats, search, config,
-    sync, qq, telegram, tasks, analyze, knowledge, scheduler, backups, inbox,
+    sync, qq, telegram, tasks, analyze, knowledge, scheduler, backups, inbox, tags, todos,
 ):
     app.include_router(module.router)
 

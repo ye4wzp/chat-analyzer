@@ -14,7 +14,7 @@ router = APIRouter()
 
 @router.get("/api/inbox/unread_count")
 async def unread_count():
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         rows = await db.execute_fetchall("SELECT COUNT(*) AS n FROM keyword_triggers WHERE read = 0")
         return {"count": int(rows[0][0]) if rows else 0}
 
@@ -35,7 +35,7 @@ async def list_triggers(
         params.append(keyword)
     where = ("WHERE " + " AND ".join(cond)) if cond else ""
 
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
             f"""SELECT t.id, t.keyword, t.message_id, t.matched_at, t.read,
@@ -53,7 +53,7 @@ async def list_triggers(
 
 @router.post("/api/inbox/{trigger_id}/read")
 async def mark_read(trigger_id: int):
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         cur = await db.execute("UPDATE keyword_triggers SET read = 1 WHERE id = ?", (trigger_id,))
         await db.commit()
         if cur.rowcount == 0:
@@ -63,7 +63,7 @@ async def mark_read(trigger_id: int):
 
 @router.post("/api/inbox/read_all")
 async def mark_all_read():
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=30) as db:
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         await db.execute("UPDATE keyword_triggers SET read = 1 WHERE read = 0")
         await db.commit()
     return {"ok": True}

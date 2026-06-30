@@ -41,6 +41,8 @@ export default function Settings() {
   const [tgInterval, setTgInterval] = useState(60)
   const [analyzeEnabled, setAnalyzeEnabled] = useState(false)
   const [analyzeInterval, setAnalyzeInterval] = useState(120)
+  const [tagEnabled, setTagEnabled] = useState(false)
+  const [tagInterval, setTagInterval] = useState(360)
   const [saving, setSaving] = useState(false)
   const [savingScheduler, setSavingScheduler] = useState(false)
 
@@ -66,6 +68,7 @@ export default function Settings() {
         setQqEnabled(s.qq_enabled); setQqInterval(s.qq_interval_minutes)
         setTgEnabled(s.telegram_enabled); setTgInterval(s.telegram_interval_minutes)
         setAnalyzeEnabled(s.analyze_enabled); setAnalyzeInterval(s.analyze_interval_minutes)
+        setTagEnabled(s.tag_enabled); setTagInterval(s.tag_interval_minutes)
       })
   }, [])
 
@@ -115,6 +118,7 @@ export default function Settings() {
           qq_enabled: qqEnabled, qq_interval_minutes: qqInterval,
           telegram_enabled: tgEnabled, telegram_interval_minutes: tgInterval,
           analyze_enabled: analyzeEnabled, analyze_interval_minutes: analyzeInterval,
+          tag_enabled: tagEnabled, tag_interval_minutes: tagInterval,
         }),
       })
       setScheduler(updated)
@@ -223,6 +227,13 @@ export default function Settings() {
               interval={analyzeInterval} setInterval={setAnalyzeInterval}
               minInterval={10}
               lastAt={scheduler?.last_analyze_at} nextAt={scheduler?.next_analyze_at}
+            />
+            <SchedulerRow
+              title="自动打标签" enabled={tagEnabled} setEnabled={setTagEnabled}
+              interval={tagInterval} setInterval={setTagInterval}
+              minInterval={30}
+              lastAt={scheduler?.last_tag_at} nextAt={scheduler?.next_tag_at}
+              helper="AI 给未打标签的私聊好友自动生成标签建议，结果在「标签 → 待审核」中确认"
             />
 
             <Button size="sm" disabled={savingScheduler} onClick={saveScheduler}>

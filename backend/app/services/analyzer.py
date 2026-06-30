@@ -44,7 +44,8 @@ async def _record_usage(
     """Best-effort write to llm_usage table. Failures are swallowed so a bad
     write never aborts an analyze run."""
     try:
-        async with aiosqlite.connect(str(DB_PATH), timeout=30) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
+            await db.execute("PRAGMA busy_timeout=30000")
             await db.execute(
                 "INSERT INTO llm_usage (provider, model, prompt_tokens, completion_tokens, purpose, task_id)"
                 " VALUES (?,?,?,?,?,?)",
@@ -200,23 +201,34 @@ class TokenBudgetExceeded(Exception):
 class AnalyzerService:
     def __init__(self):
         self.cfg = load_config()
-        self.tokens_used_today = 0
-        self._today = datetime.now().date()
         self.last_llm_error: str | None = None
         self.llm_call_count = 0
         self.llm_fail_count = 0
 
-    def _check_budget(self, estimated_tokens: int) -> None:
-        today = datetime.now().date()
-        if today != self._today:
-            self.tokens_used_today = 0
-            self._today = today
-
-        if self.tokens_used_today + estimated_tokens > self.cfg.daily_token_budget:
-            raise TokenBudgetExceeded(
-                f"Daily token budget exceeded: {self.tokens_used_today}/{self.cfg.daily_token_budget}"
+    async def _tokens_used_today(self) -> int:
+        async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
+            rows = await db.execute_fetchall(
+                """SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total
+                   FROM llm_usage
+                   WHERE DATE(timestamp, 'localtime') = DATE('now', 'localtime')"""
             )
-        self.tokens_used_today += estimated_tokens
+        return int(rows[0][0]) if rows else 0
+
+    async def _check_budget(self, estimated_tokens: int) -> None:
+        if self.cfg.daily_token_budget <= 0:
+            return
+
+        used_today = await self._tokens_used_today()
+        if used_today + estimated_tokens > self.cfg.daily_token_budget:
+            if self.cfg.budget_action == "warn":
+                logger.warning(
+                    "daily token budget would be exceeded: %d + %d > %d",
+                    used_today, estimated_tokens, self.cfg.daily_token_budget,
+                )
+                return
+            raise TokenBudgetExceeded(
+                f"Daily token budget exceeded: {used_today}/{self.cfg.daily_token_budget}"
+            )
 
     async def _call_llm(self, prompt: str, purpose: str = "") -> str | None:
         """Call LLM via configured provider. Returns raw text response."""
@@ -224,6 +236,9 @@ class AnalyzerService:
 
         if llm.provider == "openai_compatible":
             return await self._call_openai(prompt, llm, purpose)
+
+        if llm.provider == "codex_cli":
+            return await self._call_codex_cli(prompt, purpose)
 
         # Default: claude CLI
         return await self._call_claude_cli(prompt, purpose)
@@ -248,49 +263,137 @@ class AnalyzerService:
         )
         return out
 
+    async def _call_codex_cli(self, prompt: str, purpose: str = "") -> str | None:
+        """Call OpenAI Codex CLI in non-interactive mode.
+
+        We use --output-last-message to capture only the final assistant reply
+        (codex prints session metadata + a token-usage footer to stdout that
+        would otherwise need parsing). --skip-git-repo-check avoids requiring
+        a git repo at the cwd; -s read-only locks down filesystem access.
+        """
+        import os
+        import tempfile
+
+        self.llm_call_count += 1
+        out_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, prefix="codex_out_"
+        )
+        out_path = out_file.name
+        out_file.close()
+
+        # If user set a model, pass it through; otherwise rely on codex defaults.
+        cmd = [
+            "codex", "exec",
+            "--skip-git-repo-check",
+            "-s", "read-only",
+            "--color", "never",
+            "--output-last-message", out_path,
+        ]
+        if self.cfg.llm.model:
+            cmd.extend(["-m", self.cfg.llm.model])
+        cmd.append(prompt)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+            except asyncio.TimeoutError:
+                proc.kill()
+                self.llm_fail_count += 1
+                self.last_llm_error = "codex CLI timeout after 600s"
+                return None
+
+            if proc.returncode != 0:
+                self.llm_fail_count += 1
+                err = stderr.decode("utf-8", errors="replace")[-300:]
+                self.last_llm_error = f"codex CLI exit {proc.returncode}: {err}"
+                logger.warning("codex CLI failed: %s", err)
+                return None
+
+            try:
+                with open(out_path, "r", encoding="utf-8") as f:
+                    out = f.read().strip()
+            except OSError as e:
+                self.llm_fail_count += 1
+                self.last_llm_error = f"读取 codex 输出失败: {e}"
+                return None
+
+            if not out:
+                self.llm_fail_count += 1
+                self.last_llm_error = "codex 返回空内容"
+                return None
+
+            # Codex doesn't expose token counts via this interface. Estimate
+            # for budget tracking parity with claude_cli.
+            await _record_usage(
+                "codex_cli", self.cfg.llm.model or "codex-default",
+                len(prompt) // 3, len(out) // 3, purpose,
+            )
+            return out
+        finally:
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+
     async def _call_openai(self, prompt: str, llm, purpose: str = "") -> str | None:
         self.llm_call_count += 1
-        try:
-            api_url = llm.api_url.replace("localhost", "127.0.0.1")
-            # 600s — local CPU inference on long prompts can exceed 2 min easily.
-            async with httpx.AsyncClient(timeout=600) as client:
-                resp = await client.post(
-                    f"{api_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {llm.api_key}"},
-                    json={
-                        "model": llm.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.3,
-                    },
-                )
-                if resp.status_code != 200:
-                    self.llm_fail_count += 1
-                    body = resp.text[:300]
-                    self.last_llm_error = f"HTTP {resp.status_code}: {body}"
-                    logger.warning(
-                        "LLM %s returned %d: %s (prompt len=%d)",
-                        llm.model, resp.status_code, body, len(prompt),
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                api_url = llm.api_url.replace("localhost", "127.0.0.1")
+                # 600s — local CPU inference on long prompts can exceed 2 min easily.
+                async with httpx.AsyncClient(timeout=600) as client:
+                    resp = await client.post(
+                        f"{api_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {llm.api_key}"},
+                        json={
+                            "model": llm.model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.3,
+                        },
                     )
-                    return None
-                data = resp.json()
-                content = data["choices"][0]["message"]["content"].strip()
-                # OpenAI-compat usually returns usage; fall back to char/3 estimate
-                # for backends that omit it (some local servers do).
-                usage = data.get("usage") or {}
-                await _record_usage(
-                    llm.provider,
-                    llm.model,
-                    int(usage.get("prompt_tokens") or len(prompt) // 3),
-                    int(usage.get("completion_tokens") or len(content) // 3),
-                    purpose,
-                )
-                return content
-        except Exception as e:
-            self.llm_fail_count += 1
-            err_msg = str(e) or type(e).__name__
-            self.last_llm_error = err_msg
-            logger.warning("LLM call failed: %s", err_msg)
-            return None
+                    if resp.status_code != 200:
+                        self.llm_fail_count += 1
+                        body = resp.text[:300]
+                        self.last_llm_error = f"HTTP {resp.status_code}: {body}"
+                        logger.warning(
+                            "LLM %s returned %d: %s (prompt len=%d)",
+                            llm.model, resp.status_code, body, len(prompt),
+                        )
+                        return None
+                    data = resp.json()
+                    content = data["choices"][0]["message"]["content"].strip()
+                    usage = data.get("usage") or {}
+                    await _record_usage(
+                        llm.provider,
+                        llm.model,
+                        int(usage.get("prompt_tokens") or len(prompt) // 3),
+                        int(usage.get("completion_tokens") or len(content) // 3),
+                        purpose,
+                    )
+                    return content
+            except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.WriteTimeout) as e:
+                if attempt < max_retries:
+                    wait = 5 * (attempt + 1)
+                    logger.warning("LLM timeout (attempt %d/%d), retrying in %ds: %s",
+                                   attempt + 1, max_retries + 1, wait, e)
+                    await asyncio.sleep(wait)
+                    continue
+                self.llm_fail_count += 1
+                self.last_llm_error = f"ReadTimeout after {max_retries + 1} attempts"
+                logger.warning("LLM call timed out after %d attempts", max_retries + 1)
+                return None
+            except Exception as e:
+                self.llm_fail_count += 1
+                err_msg = str(e) or type(e).__name__
+                self.last_llm_error = err_msg
+                logger.warning("LLM call failed: %s", err_msg)
+                return None
 
     def _parse_llm_response(self, raw: str | None, window_size: int) -> list[dict]:
         if not raw:
@@ -316,7 +419,7 @@ class AnalyzerService:
     async def extract_knowledge(self, window: list[dict]) -> list[dict]:
         text = _format_window(window)
         prompt = CLASSIFY_PROMPT.format(messages=text)
-        self._check_budget(len(text) // 3 + 500)
+        await self._check_budget(len(text) // 3 + 500)
         raw = await self._call_llm(prompt, purpose="extract")
         items = self._parse_llm_response(raw, len(window))
         # attach source message ids
@@ -325,12 +428,12 @@ class AnalyzerService:
             item["source_message_ids"] = json.dumps([
                 window[i]["id"] for i in indices
                 if isinstance(i, int) and 0 <= i < len(window)
-            ])
+            ], separators=(",", ":"))
         return items
 
     async def extend_knowledge(self, item: dict) -> str:
         prompt = EXTEND_PROMPT.format(knowledge=f"**{item['title']}**\n{item['content']}")
-        self._check_budget(len(item['content']) // 3 + 300)
+        await self._check_budget(len(item['content']) // 3 + 300)
         return await self._call_llm(prompt, purpose="extend") or ""
 
     async def analyze_messages(self, messages: list[dict], on_progress=None) -> tuple[list[dict], str]:
@@ -373,6 +476,6 @@ class AnalyzerService:
         # Cap at 30 most-recent so the summary prompt fits even on small (4k) contexts.
         text = _format_window(messages[:30])
         prompt = SUMMARY_PROMPT.format(messages=text)
-        self._check_budget(len(text) // 3 + 300)
+        await self._check_budget(len(text) // 3 + 300)
         raw = await self._call_llm(prompt, purpose="summarize")
         return raw or ""

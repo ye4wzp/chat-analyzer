@@ -60,10 +60,13 @@ class SchedulerConfig(BaseModel):
     qq_interval_minutes: int = 60
     telegram_enabled: bool = False
     telegram_interval_minutes: int = 60
+    tag_enabled: bool = False
+    tag_interval_minutes: int = 360
     last_sync_at: str | None = None
     last_analyze_at: str | None = None
     last_qq_sync_at: str | None = None
     last_telegram_sync_at: str | None = None
+    last_tag_at: str | None = None
 
 
 class Config(BaseModel):

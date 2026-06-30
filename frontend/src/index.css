@@ -1,48 +1,138 @@
 @import "tailwindcss";
 
+/* ============================================================
+   Cool Slate · 冷峻终端 — 数据工作台设计系统
+   深色为主，[data-theme="light"] 提供浅色对照。
+   旧变量名全部保留并重映射到 Cool Slate，组件零改动即换肤；
+   新增 surface 层级 / text 层级 / 语义弱底 / 图表同色相阶梯 / 等宽字体。
+   ============================================================ */
 @theme {
-  /* Surface */
-  --color-background: #0c0d0e;
-  --color-foreground: #ececec;
-  --color-card: #18191b;
-  --color-card-foreground: #ececec;
-  --color-card-elevated: #1f2123;
-  --color-popover: #1f2123;
-  --color-popover-foreground: #ececec;
-  --color-sidebar: #131416;
+  /* ===== Surface ===== */
+  --color-background: oklch(0.165 0.012 250);
+  --color-bg-subtle: oklch(0.145 0.012 250);
+  --color-foreground: oklch(0.965 0.004 250);
+  --color-card: oklch(0.198 0.013 250);
+  --color-card-foreground: oklch(0.965 0.004 250);
+  --color-card-elevated: oklch(0.232 0.014 250);
+  --color-surface-2: oklch(0.232 0.014 250);
+  --color-surface-3: oklch(0.275 0.015 251);
+  --color-popover: oklch(0.232 0.014 250);
+  --color-popover-foreground: oklch(0.965 0.004 250);
+  --color-sidebar: oklch(0.145 0.012 250);
 
-  /* Brand: emerald */
-  --color-primary: #10b981;
-  --color-primary-foreground: #04140d;
-  --color-primary-soft: #064e3b;
+  /* ===== Brand: electric azure ===== */
+  --color-primary: oklch(0.705 0.142 233);
+  --color-primary-hover: oklch(0.760 0.140 233);
+  --color-primary-active: oklch(0.640 0.140 233);
+  --color-primary-foreground: oklch(0.155 0.030 250);
+  --color-primary-soft: oklch(0.305 0.060 235);
+  --color-primary-subtle: oklch(0.305 0.060 235);
 
-  /* Tonal layers */
-  --color-secondary: #232628;
-  --color-secondary-foreground: #ececec;
-  --color-muted: #1d1f21;
-  --color-muted-foreground: #8a8a8a;
-  --color-accent: #232628;
-  --color-accent-foreground: #ececec;
-  --color-border: #2a2c2f;
-  --color-input: #2a2c2f;
-  --color-ring: #10b981;
+  /* ===== Tonal layers ===== */
+  --color-secondary: oklch(0.232 0.014 250);
+  --color-secondary-foreground: oklch(0.765 0.012 250);
+  --color-muted: oklch(0.232 0.014 250);
+  --color-muted-foreground: oklch(0.595 0.014 252);
+  --color-text-secondary: oklch(0.765 0.012 250);
+  --color-text-muted: oklch(0.595 0.014 252);
+  --color-text-faint: oklch(0.470 0.014 252);
+  --color-accent: oklch(0.305 0.060 235);
+  --color-accent-foreground: oklch(0.705 0.142 233);
+  --color-border: oklch(0.288 0.016 252);
+  --color-border-strong: oklch(0.372 0.020 252);
+  --color-input: oklch(0.372 0.020 252);
+  --color-ring: oklch(0.705 0.142 233);
 
-  /* Status */
-  --color-success: #10b981;
-  --color-success-foreground: #04140d;
-  --color-warning: #f59e0b;
-  --color-warning-foreground: #271700;
-  --color-info: #38bdf8;
-  --color-info-foreground: #001a26;
-  --color-destructive: #ef4444;
-  --color-destructive-foreground: #ffffff;
+  /* ===== Status ===== */
+  --color-success: oklch(0.745 0.150 158);
+  --color-success-foreground: oklch(0.160 0.030 158);
+  --color-success-subtle: oklch(0.320 0.055 158);
+  --color-warning: oklch(0.805 0.130 78);
+  --color-warning-foreground: oklch(0.180 0.030 78);
+  --color-warning-subtle: oklch(0.340 0.055 78);
+  --color-info: oklch(0.800 0.120 200);
+  --color-info-foreground: oklch(0.170 0.030 230);
+  --color-info-subtle: oklch(0.320 0.055 215);
+  --color-destructive: oklch(0.665 0.180 25);
+  --color-destructive-foreground: oklch(0.990 0.010 25);
+  --color-destructive-subtle: oklch(0.330 0.070 25);
 
-  /* Platform accents — used in JS via PLATFORM_COLOR */
-  --color-platform-wechat: #22c55e;
-  --color-platform-qq: #38bdf8;
-  --color-platform-telegram: #818cf8;
+  /* ===== Chart · same-hue azure ramp ===== */
+  --chart-1: oklch(0.720 0.150 233);
+  --chart-2: oklch(0.800 0.120 200);
+  --chart-3: oklch(0.620 0.140 258);
+  --chart-4: oklch(0.865 0.080 215);
+  --chart-5: oklch(0.540 0.130 248);
+  --chart-6: oklch(0.690 0.100 282);
+  --chart-grid: oklch(0.300 0.014 252);
 
-  --radius: 0.5rem;
+  /* ===== Platform accents (used in JS via PLATFORM_COLOR) ===== */
+  --color-platform-wechat: oklch(0.745 0.150 158);
+  --color-platform-qq: oklch(0.705 0.142 233);
+  --color-platform-telegram: oklch(0.800 0.120 200);
+
+  /* ===== Type ===== */
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+
+  --radius: 6px;
+}
+
+/* ===== Light counterpart ===== */
+[data-theme="light"] {
+  --color-background: oklch(0.975 0.004 250);
+  --color-bg-subtle: oklch(0.950 0.006 250);
+  --color-foreground: oklch(0.220 0.018 252);
+  --color-card: oklch(1 0 0);
+  --color-card-foreground: oklch(0.220 0.018 252);
+  --color-card-elevated: oklch(0.966 0.006 250);
+  --color-surface-2: oklch(0.966 0.006 250);
+  --color-surface-3: oklch(0.940 0.008 250);
+  --color-popover: oklch(1 0 0);
+  --color-popover-foreground: oklch(0.220 0.018 252);
+  --color-sidebar: oklch(0.950 0.006 250);
+
+  --color-primary: oklch(0.520 0.165 240);
+  --color-primary-hover: oklch(0.460 0.165 240);
+  --color-primary-active: oklch(0.410 0.150 240);
+  --color-primary-foreground: oklch(0.995 0.005 250);
+  --color-primary-soft: oklch(0.930 0.040 235);
+  --color-primary-subtle: oklch(0.930 0.040 235);
+
+  --color-secondary: oklch(0.966 0.006 250);
+  --color-secondary-foreground: oklch(0.430 0.016 252);
+  --color-muted: oklch(0.966 0.006 250);
+  --color-muted-foreground: oklch(0.560 0.014 252);
+  --color-text-secondary: oklch(0.430 0.016 252);
+  --color-text-muted: oklch(0.560 0.014 252);
+  --color-text-faint: oklch(0.665 0.012 252);
+  --color-accent: oklch(0.930 0.040 235);
+  --color-accent-foreground: oklch(0.520 0.165 240);
+  --color-border: oklch(0.905 0.008 250);
+  --color-border-strong: oklch(0.835 0.012 250);
+  --color-input: oklch(0.835 0.012 250);
+  --color-ring: oklch(0.520 0.165 240);
+
+  --color-success: oklch(0.540 0.140 158);
+  --color-success-foreground: oklch(0.995 0.005 158);
+  --color-success-subtle: oklch(0.930 0.045 158);
+  --color-warning: oklch(0.620 0.130 70);
+  --color-warning-foreground: oklch(0.995 0.005 80);
+  --color-warning-subtle: oklch(0.935 0.050 80);
+  --color-info: oklch(0.560 0.135 230);
+  --color-info-foreground: oklch(0.995 0.005 230);
+  --color-info-subtle: oklch(0.930 0.045 215);
+  --color-destructive: oklch(0.545 0.200 27);
+  --color-destructive-foreground: oklch(0.995 0.005 25);
+  --color-destructive-subtle: oklch(0.940 0.045 25);
+
+  --chart-1: oklch(0.560 0.160 240);
+  --chart-2: oklch(0.650 0.135 205);
+  --chart-3: oklch(0.470 0.150 262);
+  --chart-4: oklch(0.720 0.110 218);
+  --chart-5: oklch(0.400 0.140 250);
+  --chart-6: oklch(0.560 0.120 285);
+  --chart-grid: oklch(0.915 0.008 252);
 }
 
 * {
@@ -51,23 +141,25 @@
 }
 
 body {
-  background-color: var(--color-background);
+  background: var(--color-background);
   color: var(--color-foreground);
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Number-heavy elements pick up the system mono — sharper for KPIs / timestamps. */
-.tabular-nums { font-variant-numeric: tabular-nums; }
-.font-mono { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace; }
+::selection { background: color-mix(in oklch, var(--color-primary) 38%, transparent); }
 
-::-webkit-scrollbar { width: 8px; height: 8px; }
+/* ID / 时间戳 / 数值用等宽字体 — 设计系统的标志性细节 */
+.tabular-nums { font-variant-numeric: tabular-nums; }
+.font-mono { font-family: var(--font-mono); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #2f3134; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #3f4144; }
+::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-faint); }
 
 /* Subtle global focus ring on keyboard nav */
 :focus-visible {

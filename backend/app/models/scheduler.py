@@ -12,3 +12,5 @@ class SchedulerUpdate(BaseModel):
     qq_interval_minutes: Optional[int] = None
     telegram_enabled: Optional[bool] = None
     telegram_interval_minutes: Optional[int] = None
+    tag_enabled: Optional[bool] = None
+    tag_interval_minutes: Optional[int] = None
