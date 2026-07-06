@@ -3,13 +3,12 @@ import { toast } from "sonner"
 import {
   fetchAPI,
   getErrorMessage,
-  subscribeSSE,
-  type TaskProgress,
   type TelegramStatus,
   type TelegramLoginConfirmResponse,
   type TelegramQRStartResponse,
   type TelegramQRStatusResponse,
 } from "@/lib/api"
+import { useTaskRunner } from "@/hooks/useTaskRunner"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Loader2, ExternalLink, LogOut, RefreshCw, ArrowRight, QrCode, Smartphone } from "lucide-react"
@@ -27,7 +26,8 @@ export function TelegramCard() {
   const [code, setCode] = useState("")
   const [password, setPassword] = useState("")
   const [busy, setBusy] = useState(false)
-  const [syncing, setSyncing] = useState(false)
+  const { run, running } = useTaskRunner()
+  const syncing = running.has("sync_telegram")
 
   // QR-specific state
   const [qrId, setQrId] = useState("")
@@ -187,29 +187,11 @@ export function TelegramCard() {
     }
   }
 
-  const sync = async () => {
-    if (syncing) return
-    setSyncing(true)
-    const id = toast.loading("Telegram 同步启动中...")
-    try {
-      const { task_id } = await fetchAPI<{ task_id: string }>("/sync/telegram", { method: "POST" })
-      const es = subscribeSSE<TaskProgress>(`/tasks/${task_id}/events`, (data) => {
-        toast.loading(data.message || data.status, { id })
-        if (data.status === "done") {
-          es.close()
-          toast.success(data.message || "同步完成", { id })
-          setSyncing(false)
-        } else if (data.status === "error") {
-          es.close()
-          toast.error(data.message || "同步失败", { id })
-          setSyncing(false)
-        }
-      }, () => { toast.dismiss(id); setSyncing(false) })
-    } catch (e) {
-      toast.error(getErrorMessage(e), { id })
-      setSyncing(false)
-    }
-  }
+  const sync = () => run({
+    start: () => fetchAPI<{ task_id: string }>("/sync/telegram", { method: "POST" }),
+    taskType: "sync_telegram",
+    loadingText: "Telegram 同步启动中...",
+  })
 
   const loggedIn = status?.logged_in === true
 
@@ -375,7 +357,7 @@ export function TelegramCard() {
               <LogOut className="mr-1.5 h-3.5 w-3.5" />退出登录
             </Button>
             <div className="ml-auto">
-              <Button size="sm" onClick={sync} disabled={syncing}>
+              <Button size="sm" onClick={() => void sync()} disabled={syncing}>
                 {syncing && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}立即同步
               </Button>
             </div>

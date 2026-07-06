@@ -1,5 +1,7 @@
 export const PAGE_SIZE = 50
 
+export const MASKED = "********"
+
 export const PLATFORM_COLOR: Record<string, string> = {
   wechat: "#22c55e",
   qq: "#38bdf8",

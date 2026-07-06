@@ -1,10 +1,10 @@
-import { useState } from "react"
-import { toast } from "sonner"
-import { fetchAPI, getErrorMessage, subscribeSSE, type Config, type TaskProgress } from "@/lib/api"
+import { fetchAPI, type Config } from "@/lib/api"
+import { useTaskRunner } from "@/hooks/useTaskRunner"
 import { Button } from "@/components/ui/button"
 import { Loader2, RefreshCw, MessagesSquare } from "lucide-react"
 import { QQCard } from "./QQCard"
 import { TelegramCard } from "./TelegramCard"
+import { AliasesCard } from "./AliasesCard"
 
 interface Props {
   config: Config
@@ -12,27 +12,14 @@ interface Props {
 }
 
 export function ImportTab({ config, onConfigChange }: Props) {
-  const [syncingWechat, setSyncingWechat] = useState(false)
+  const { run, running } = useTaskRunner()
+  const syncingWechat = running.has("sync_wechat")
 
-  const syncWechat = async () => {
-    if (syncingWechat) return
-    setSyncingWechat(true)
-    const id = toast.loading("微信同步启动中...")
-    try {
-      const { task_id } = await fetchAPI<{ task_id: string }>("/sync/wechat", { method: "POST" })
-      const es = subscribeSSE<TaskProgress>(`/tasks/${task_id}/events`, (data) => {
-        toast.loading(data.message || data.status, { id })
-        if (data.status === "done") {
-          es.close(); toast.success(data.message || "完成", { id }); setSyncingWechat(false)
-        } else if (data.status === "error") {
-          es.close(); toast.error(data.message || "失败", { id }); setSyncingWechat(false)
-        }
-      }, () => { toast.dismiss(id); setSyncingWechat(false) })
-    } catch (e) {
-      toast.error(getErrorMessage(e), { id })
-      setSyncingWechat(false)
-    }
-  }
+  const syncWechat = () => run({
+    start: () => fetchAPI<{ task_id: string }>("/sync/wechat", { method: "POST" }),
+    taskType: "sync_wechat",
+    loadingText: "微信同步启动中...",
+  })
 
   return (
     <div className="space-y-4 max-w-3xl">
@@ -48,7 +35,7 @@ export function ImportTab({ config, onConfigChange }: Props) {
               通过 wx-cli 同步本地微信会话和历史消息
             </p>
           </div>
-          <Button size="sm" onClick={syncWechat} disabled={syncingWechat}>
+          <Button size="sm" onClick={() => void syncWechat()} disabled={syncingWechat}>
             {syncingWechat ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
             立即同步
           </Button>
@@ -60,6 +47,7 @@ export function ImportTab({ config, onConfigChange }: Props) {
 
       <QQCard config={config} onConfigChange={onConfigChange} />
       <TelegramCard />
+      <AliasesCard />
 
       <div className="rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-card)]/50 p-5">
         <h3 className="flex items-center gap-2 text-sm font-semibold mb-2">

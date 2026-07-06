@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import { CheckSquare, ListChecks, Loader2, Square } from "lucide-react"
 import { fetchAPI, getErrorMessage, type TodoItem, type TodoStats } from "@/lib/api"
@@ -26,6 +26,12 @@ export default function Todos() {
   const [stats, setStats] = useState<TodoStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [includeDone, setIncludeDone] = useState(false)
+  const removeTimers = useRef(new Map<number, number>())
+
+  useEffect(() => {
+    const timers = removeTimers.current
+    return () => { timers.forEach(id => window.clearTimeout(id)); timers.clear() }
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -45,17 +51,33 @@ export default function Todos() {
   useEffect(() => { void load() }, [load])
 
   const toggle = async (item: TodoItem) => {
+    // A re-toggle within the removal delay cancels the pending removal.
+    const pending = removeTimers.current.get(item.id)
+    if (pending !== undefined) {
+      window.clearTimeout(pending)
+      removeTimers.current.delete(item.id)
+    }
+    const nextDone = !item.done
+    const delta = nextDone ? -1 : 1
+    const adjustStats = (sign: 1 | -1) => setStats(prev => prev && ({
+      ...prev,
+      open: prev.open + delta * sign,
+      urgent: item.urgency >= 4 ? prev.urgent + delta * sign : prev.urgent,
+    }))
     // optimistic
-    setTodos(prev => prev.map(t => t.id === item.id ? { ...t, done: !t.done } : t))
+    setTodos(prev => prev.map(t => t.id === item.id ? { ...t, done: nextDone } : t))
+    adjustStats(1)
     try {
-      await fetchAPI(`/todos/${item.id}`, { method: "PATCH", body: JSON.stringify({ done: !item.done }) })
-      const s = await fetchAPI<TodoStats>("/todos/stats")
-      setStats(s)
-      if (!includeDone && !item.done) {
-        setTimeout(() => setTodos(prev => prev.filter(t => t.id !== item.id)), 250)
+      await fetchAPI(`/todos/${item.id}`, { method: "PATCH", body: JSON.stringify({ done: nextDone }) })
+      if (!includeDone && nextDone) {
+        removeTimers.current.set(item.id, window.setTimeout(() => {
+          removeTimers.current.delete(item.id)
+          setTodos(prev => prev.filter(t => t.id !== item.id))
+        }, 250))
       }
     } catch (e) {
       setTodos(prev => prev.map(t => t.id === item.id ? { ...t, done: item.done } : t))
+      adjustStats(-1)
       toast.error(getErrorMessage(e))
     }
   }

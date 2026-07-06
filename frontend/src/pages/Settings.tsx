@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
-import { fetchAPI, getErrorMessage, type Config, type SchedulerStatus } from "@/lib/api"
+import { fetchAPI, getErrorMessage, type Config, type SchedulerStatus, type SemanticTrigger } from "@/lib/api"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
@@ -10,8 +10,9 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { LLMTab } from "./settings/LLMTab"
 import { ImportTab } from "./settings/ImportTab"
 import { BackupsPanel } from "./settings/BackupsPanel"
-import { Loader2, Clock } from "lucide-react"
+import { Loader2, Clock, Plus, Trash2 } from "lucide-react"
 import { formatTime } from "@/lib/utils"
+import { MASKED } from "@/lib/constants"
 
 const TAB_KEYS = ["general", "model", "sources", "scheduler", "backups"] as const
 type TabKey = typeof TAB_KEYS[number]
@@ -27,6 +28,8 @@ export default function Settings() {
   const [action, setAction] = useState("")
   const [vip, setVip] = useState("")
   const [keywords, setKeywords] = useState("")
+  const [apiToken, setApiToken] = useState("")
+  const [triggers, setTriggers] = useState<SemanticTrigger[]>([])
   const [llmProvider, setLlmProvider] = useState("claude_cli")
   const [llmUrl, setLlmUrl] = useState("http://127.0.0.1:1234/v1")
   const [llmModel, setLlmModel] = useState("")
@@ -43,6 +46,8 @@ export default function Settings() {
   const [analyzeInterval, setAnalyzeInterval] = useState(120)
   const [tagEnabled, setTagEnabled] = useState(false)
   const [tagInterval, setTagInterval] = useState(360)
+  const [todoRemindEnabled, setTodoRemindEnabled] = useState(false)
+  const [todoRemindInterval, setTodoRemindInterval] = useState(1440)
   const [saving, setSaving] = useState(false)
   const [savingScheduler, setSavingScheduler] = useState(false)
 
@@ -54,6 +59,8 @@ export default function Settings() {
         setAction(c.budget_action)
         setVip(c.vip_contacts.join(", "))
         setKeywords((c.keywords || []).join(", "))
+        setApiToken(c.api_token || "")
+        setTriggers(c.semantic_triggers || [])
         setLlmProvider(c.llm.provider)
         setLlmUrl(c.llm.api_url)
         setLlmModel(c.llm.model)
@@ -69,6 +76,7 @@ export default function Settings() {
         setTgEnabled(s.telegram_enabled); setTgInterval(s.telegram_interval_minutes)
         setAnalyzeEnabled(s.analyze_enabled); setAnalyzeInterval(s.analyze_interval_minutes)
         setTagEnabled(s.tag_enabled); setTagInterval(s.tag_interval_minutes)
+        setTodoRemindEnabled(s.todo_remind_enabled); setTodoRemindInterval(s.todo_remind_interval_minutes)
       })
   }, [])
 
@@ -92,14 +100,23 @@ export default function Settings() {
           budget_action: action,
           vip_contacts: vip.split(",").map(s => s.trim()).filter(Boolean),
           keywords: keywords.split(",").map(s => s.trim()).filter(Boolean),
+          api_token: apiToken,
+          semantic_triggers: triggers.filter(t => t.query.trim()),
           llm_provider: llmProvider,
           llm_api_url: llmUrl,
           llm_model: llmModel,
-          llm_api_key: llmApiKey === "********" ? undefined : llmApiKey,
+          llm_api_key: llmApiKey === MASKED ? undefined : llmApiKey,
           llm_embedding_model: llmEmbeddingModel,
         }),
       })
+      if (apiToken !== MASKED) {
+        try {
+          if (apiToken) localStorage.setItem("apiToken", apiToken)
+          else localStorage.removeItem("apiToken")
+        } catch { /* private mode */ }
+      }
       setConfig(updated)
+      setApiToken(updated.api_token || "")
       toast.success("已保存")
     } catch (e) {
       toast.error(getErrorMessage(e))
@@ -119,6 +136,7 @@ export default function Settings() {
           telegram_enabled: tgEnabled, telegram_interval_minutes: tgInterval,
           analyze_enabled: analyzeEnabled, analyze_interval_minutes: analyzeInterval,
           tag_enabled: tagEnabled, tag_interval_minutes: tagInterval,
+          todo_remind_enabled: todoRemindEnabled, todo_remind_interval_minutes: todoRemindInterval,
         }),
       })
       setScheduler(updated)
@@ -172,6 +190,48 @@ export default function Settings() {
                 关键词（逗号分隔）—— 命中后会进收件箱、可选系统通知
               </label>
               <Input value={keywords} onChange={e => setKeywords(e.target.value)} className="max-w-sm" placeholder="项目, deadline, 紧急" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-[var(--color-muted-foreground)]">
+                语义触发器 —— 消息与描述语义相近时进收件箱（需 Embedding 模型）
+              </label>
+              <div className="space-y-2">
+                {triggers.map((t, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <Input
+                      value={t.query}
+                      onChange={e => setTriggers(prev => prev.map((x, j) => j === i ? { ...x, query: e.target.value } : x))}
+                      placeholder="如：有人在讨论服务器故障"
+                      className="max-w-sm"
+                    />
+                    <Input
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={t.threshold}
+                      onChange={e => setTriggers(prev => prev.map((x, j) => j === i ? { ...x, threshold: Number(e.target.value) } : x))}
+                      className="w-24"
+                    />
+                    <button
+                      onClick={() => setTriggers(prev => prev.filter((_, j) => j !== i))}
+                      aria-label="删除触发器"
+                      className="rounded p-1.5 text-[var(--color-muted-foreground)] hover:bg-[var(--color-destructive)]/10 hover:text-[var(--color-destructive)]"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+                <Button variant="outline" size="sm" onClick={() => setTriggers(prev => [...prev, { query: "", threshold: 0.6 }])}>
+                  <Plus className="mr-1 h-3.5 w-3.5" />添加触发器
+                </Button>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-[var(--color-muted-foreground)]">
+                API Token —— 设置后所有 API 请求需携带此令牌（留空则关闭鉴权）
+              </label>
+              <Input value={apiToken} onChange={e => setApiToken(e.target.value)} className="max-w-sm" placeholder="局域网暴露时建议设置" />
             </div>
             <div className="flex items-center gap-2 text-sm text-[var(--color-muted-foreground)]">
               筛选模式：<Badge variant="secondary">{config.chat_filter.mode}</Badge>
@@ -234,6 +294,13 @@ export default function Settings() {
               minInterval={30}
               lastAt={scheduler?.last_tag_at} nextAt={scheduler?.next_tag_at}
               helper="AI 给未打标签的私聊好友自动生成标签建议，结果在「标签 → 待审核」中确认"
+            />
+            <SchedulerRow
+              title="待办提醒" enabled={todoRemindEnabled} setEnabled={setTodoRemindEnabled}
+              interval={todoRemindInterval} setInterval={setTodoRemindInterval}
+              minInterval={30}
+              lastAt={scheduler?.last_todo_remind_at} nextAt={scheduler?.next_todo_remind_at}
+              helper="定期通过系统通知提醒未完成的高紧急度待办"
             />
 
             <Button size="sm" disabled={savingScheduler} onClick={saveScheduler}>

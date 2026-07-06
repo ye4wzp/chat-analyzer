@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
-import { Archive, BookOpen, Check, Clock3, Cpu, Download, FileText, Inbox, Loader2, Pencil, Search, Sparkles, Trash2, X } from "lucide-react"
-import { fetchAPI, getErrorMessage, subscribeSSE, type KnowledgeItem, type TaskProgress } from "@/lib/api"
-import { formatTime } from "@/lib/utils"
+import { Archive, BookOpen, Check, ClipboardCheck, Clock3, Cpu, Download, FileText, Inbox, Loader2, Pencil, Search, Sparkles, Trash2, Undo2, X } from "lucide-react"
+import { fetchAPI, getErrorMessage, type KnowledgeBatch, type KnowledgeItem, type PendingBatch, type PendingKnowledge } from "@/lib/api"
+import { formatTime, parseTime } from "@/lib/utils"
+import { useTaskRunner } from "@/hooks/useTaskRunner"
+import { KnowledgeReviewModal } from "@/components/KnowledgeReviewModal"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -17,7 +19,7 @@ function parseTags(raw: string): string[] {
 }
 
 function daysSince(iso: string): number {
-  const t = new Date((iso || "").replace(" ", "T")).getTime()
+  const t = parseTime(iso || "").getTime()
   return Number.isNaN(t) ? 9999 : (Date.now() - t) / 86400000
 }
 
@@ -203,7 +205,11 @@ export default function Knowledge() {
   const [extending, setExtending] = useState<number | null>(null)
   const [mode, setMode] = useState<"keyword" | "semantic">("keyword")
   const [embedStatus, setEmbedStatus] = useState<{ model: string; total: number; indexed: number; stale: number } | null>(null)
-  const [embedding, setEmbedding] = useState(false)
+  const [pendingBatches, setPendingBatches] = useState<PendingBatch[]>([])
+  const [savedBatches, setSavedBatches] = useState<KnowledgeBatch[]>([])
+  const [review, setReview] = useState<{ taskId: string; results: PendingKnowledge[]; summary: string } | null>(null)
+  const { run: runTask, running } = useTaskRunner()
+  const embedding = running.has("embed")
 
   const load = useCallback(async (query = "", searchMode: "keyword" | "semantic" = mode) => {
     setLoading(true)
@@ -217,6 +223,8 @@ export default function Knowledge() {
         if (prev && data.some(i => i.id === prev.id)) return data.find(i => i.id === prev.id) ?? prev
         return data[0] ?? null
       })
+    } catch (e) {
+      toast.error(getErrorMessage(e))
     } finally {
       setLoading(false)
     }
@@ -228,10 +236,63 @@ export default function Knowledge() {
     } catch { /* non-critical */ }
   }
 
+  const refreshPending = useCallback(async () => {
+    try {
+      setPendingBatches(await fetchAPI<PendingBatch[]>("/analyze/pending"))
+    } catch { /* non-critical */ }
+  }, [])
+
+  const refreshSavedBatches = useCallback(async () => {
+    try {
+      setSavedBatches(await fetchAPI<KnowledgeBatch[]>("/knowledge/batches"))
+    } catch { /* non-critical */ }
+  }, [])
+
   useEffect(() => {
     void load()
     void refreshEmbedStatus()
-  }, [load])
+    void refreshPending()
+    void refreshSavedBatches()
+  }, [load, refreshPending, refreshSavedBatches])
+
+  const openReview = async (b: PendingBatch) => {
+    try {
+      const results = await fetchAPI<PendingKnowledge[]>(`/analyze/${b.task_id}/results`)
+      setReview({ taskId: b.task_id, results, summary: b.summary || "" })
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    }
+  }
+
+  const discardBatch = async (b: PendingBatch) => {
+    if (!confirm(`确定丢弃该批次的 ${b.item_count} 条待审核知识点？`)) return
+    try {
+      await fetchAPI(`/analyze/${b.task_id}/discard`, { method: "POST" })
+      setPendingBatches(prev => prev.filter(x => x.task_id !== b.task_id))
+      toast.success("已丢弃")
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    }
+  }
+
+  const onReviewSaved = () => {
+    setReview(null)
+    void refreshPending()
+    void refreshSavedBatches()
+    void load(q)
+  }
+
+  const undoBatch = async (b: KnowledgeBatch) => {
+    if (!confirm(`确定撤销该批次（${b.item_count} 条知识点）？`)) return
+    try {
+      await fetchAPI(`/knowledge/batch/${encodeURIComponent(b.batch_id)}`, { method: "DELETE" })
+      setSavedBatches(prev => prev.filter(x => x.batch_id !== b.batch_id))
+      toast.success("已撤销该批次")
+      void load(q)
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    }
+  }
 
   const allTags = useMemo(() => Array.from(new Set(items.flatMap(i => parseTags(i.tags)))), [items])
   const filtered = activeTag ? items.filter(i => parseTags(i.tags).includes(activeTag)) : items
@@ -244,70 +305,56 @@ export default function Knowledge() {
       const res = await fetchAPI<{ extended_content: string }>(`/knowledge/${id}/extend`, { method: "POST" })
       setItems(prev => prev.map(i => i.id === id ? { ...i, extended_content: res.extended_content } : i))
       setSelected(prev => prev?.id === id ? { ...prev, extended_content: res.extended_content } : prev)
+    } catch (e) {
+      toast.error(getErrorMessage(e))
     } finally {
       setExtending(null)
     }
   }
 
   const update = async (id: number, fields: { title?: string; content?: string; tags?: string[] }) => {
-    await fetchAPI(`/knowledge/${id}`, { method: "PATCH", body: JSON.stringify(fields) })
-    const patch = { ...fields, tags: fields.tags ? JSON.stringify(fields.tags) : undefined }
-    setItems(prev => prev.map(i => i.id === id ? { ...i, ...patch, tags: patch.tags ?? i.tags } : i))
-    setSelected(prev => prev?.id === id ? { ...prev, ...patch, tags: patch.tags ?? prev.tags } : prev)
+    try {
+      await fetchAPI(`/knowledge/${id}`, { method: "PATCH", body: JSON.stringify(fields) })
+      const patch = { ...fields, tags: fields.tags ? JSON.stringify(fields.tags) : undefined }
+      setItems(prev => prev.map(i => i.id === id ? { ...i, ...patch, tags: patch.tags ?? i.tags } : i))
+      setSelected(prev => prev?.id === id ? { ...prev, ...patch, tags: patch.tags ?? prev.tags } : prev)
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    }
   }
 
   const remove = async (id: number) => {
-    await fetchAPI(`/knowledge/${id}`, { method: "DELETE" })
-    setItems(prev => {
-      const next = prev.filter(i => i.id !== id)
-      setSelected(next[0] ?? null)
-      return next
-    })
+    if (!confirm("确定删除这条知识点？")) return
+    try {
+      await fetchAPI(`/knowledge/${id}`, { method: "DELETE" })
+      setItems(prev => {
+        const next = prev.filter(i => i.id !== id)
+        setSelected(next[0] ?? null)
+        return next
+      })
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    }
   }
 
   const exportMd = () => {
     window.open("/api/knowledge/export?fmt=markdown", "_blank")
   }
 
-  const startEmbed = async () => {
-    if (embedding) return
-    setEmbedding(true)
-    const id = toast.loading("启动 embedding...")
-    try {
-      const { task_id } = await fetchAPI<{ task_id: string }>("/knowledge/embed", { method: "POST" })
-      const es = subscribeSSE<TaskProgress>(`/tasks/${task_id}/events`, (data) => {
-        toast.loading(data.message || data.status, { id })
-        if (data.status === "done") {
-          es.close()
-          toast.success(data.message || "完成", { id })
-          setEmbedding(false)
-          void refreshEmbedStatus()
-        } else if (data.status === "error") {
-          es.close()
-          toast.error(data.message || "失败", { id })
-          setEmbedding(false)
-        }
-      }, () => { toast.dismiss(id); setEmbedding(false) })
-    } catch (e) {
-      toast.error(getErrorMessage(e), { id })
-      setEmbedding(false)
-    }
-  }
+  const startEmbed = () => runTask({
+    start: () => fetchAPI<{ task_id: string }>("/knowledge/embed", { method: "POST" }),
+    taskType: "embed",
+    loadingText: "启动 embedding...",
+    onDone: () => { void refreshEmbedStatus() },
+  })
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-[var(--color-background)]">
       <header className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-background)]/75 px-5 py-5 backdrop-blur md:px-7">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <BookOpen className="h-6 w-6" />
-              <h1 className="text-2xl font-semibold tracking-tight">知识库</h1>
-            </div>
-            <div className="mt-4 flex gap-6 text-sm">
-              <button className="border-b-2 border-[var(--color-primary)] pb-2 font-medium text-[var(--color-primary)]">知识卡片</button>
-              <button className="pb-2 text-[var(--color-muted-foreground)]">标签</button>
-              <button className="pb-2 text-[var(--color-muted-foreground)]">来源消息</button>
-            </div>
+          <div className="flex items-center gap-2">
+            <BookOpen className="h-6 w-6" />
+            <h1 className="text-2xl font-semibold tracking-tight">知识库</h1>
           </div>
           <div className="flex flex-wrap gap-2">
             <div className="relative w-[280px]">
@@ -332,7 +379,7 @@ export default function Knowledge() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={startEmbed}
+                onClick={() => void startEmbed()}
                 disabled={embedding || (embedStatus.indexed === embedStatus.total && embedStatus.stale === 0)}
               >
                 {embedding ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Cpu className="mr-1.5 h-3.5 w-3.5" />}
@@ -349,7 +396,6 @@ export default function Knowledge() {
           <div className="hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm xl:block">
             <div className="mb-3 flex items-center justify-between">
               <p className="text-sm text-[var(--color-muted-foreground)]">热门标签</p>
-              <button className="text-xs text-[var(--color-muted-foreground)]">更多</button>
             </div>
             <div className="flex flex-wrap gap-2">
               {allTags.slice(0, 6).map(tag => (
@@ -359,6 +405,25 @@ export default function Knowledge() {
           </div>
         </div>
       </header>
+
+      {pendingBatches.length > 0 && (
+        <section className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-warning-subtle)]/40 px-5 py-3 md:px-7">
+          <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-[var(--color-warning)]">
+            <ClipboardCheck className="h-3.5 w-3.5" />待审核批次 ({pendingBatches.length})
+          </p>
+          <div className="space-y-1.5">
+            {pendingBatches.map(b => (
+              <div key={b.task_id} className="flex items-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-2 text-xs">
+                <span className="tabular-nums text-[var(--color-muted-foreground)]">{formatTime(b.created_at)}</span>
+                <span className="font-medium">{b.item_count} 条知识点</span>
+                <span className="min-w-0 flex-1 truncate text-[var(--color-muted-foreground)]">{b.summary || ""}</span>
+                <Button size="sm" onClick={() => void openReview(b)}>审核</Button>
+                <Button variant="outline" size="sm" onClick={() => void discardBatch(b)}>丢弃</Button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="grid min-h-0 flex-1 gap-4 p-4 md:grid-cols-[220px_1fr] md:p-5 xl:grid-cols-[240px_1fr_370px]">
         <aside className="hidden min-h-0 flex-col rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] shadow-sm md:flex">
@@ -385,6 +450,28 @@ export default function Knowledge() {
               ))}
             </div>
           </div>
+          {savedBatches.length > 0 && (
+            <div className="border-t border-[var(--color-border)] p-3">
+              <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-[var(--color-muted-foreground)]">
+                <Undo2 className="h-3.5 w-3.5" />批次撤销
+              </p>
+              <div className="space-y-1">
+                {savedBatches.slice(0, 5).map(b => (
+                  <div key={b.batch_id} className="flex items-center gap-2 text-xs text-[var(--color-muted-foreground)]">
+                    <span className="min-w-0 flex-1 truncate tabular-nums">{formatTime(b.created_at)} · {b.item_count} 条</span>
+                    <button
+                      onClick={() => void undoBatch(b)}
+                      title="撤销该批次"
+                      aria-label="撤销该批次"
+                      className="rounded p-1 hover:bg-[var(--color-destructive-subtle)] hover:text-[var(--color-destructive)]"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <button onClick={() => setActiveTag("")} className="border-t border-[var(--color-border)] px-4 py-3 text-left text-xs text-[var(--color-muted-foreground)] hover:text-[var(--color-primary)]">
             查看全部提醒
           </button>
@@ -453,6 +540,16 @@ export default function Knowledge() {
           />
         </div>
       </div>
+
+      {review && (
+        <KnowledgeReviewModal
+          taskId={review.taskId}
+          results={review.results}
+          summary={review.summary}
+          onClose={() => setReview(null)}
+          onSaved={onReviewSaved}
+        />
+      )}
     </div>
   )
 }

@@ -1,13 +1,12 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 import {
   fetchAPI,
   getErrorMessage,
-  subscribeSSE,
   type Config,
   type QQLauncherStatus,
-  type TaskProgress,
 } from "@/lib/api"
+import { useTaskRunner } from "@/hooks/useTaskRunner"
 import { Button } from "@/components/ui/button"
 import {
   Loader2, CheckCircle2, AlertCircle, ExternalLink,
@@ -21,12 +20,14 @@ interface Props {
 export function QQLauncherPanel({ onConfigChange }: Props) {
   const [status, setStatus] = useState<QQLauncherStatus | null>(null)
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState<"install" | "start" | "stop" | null>(null)
+  const [busyAction, setBusyAction] = useState<"start" | "stop" | null>(null)
   const [logs, setLogs] = useState<string>("")
   const [showLogs, setShowLogs] = useState(false)
-  const pollRef = useRef<number | null>(null)
+  const { run, running } = useTaskRunner()
+  const installing = running.has("qq_install")
+  const busy = installing ? "install" : busyAction
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       const s = await fetchAPI<QQLauncherStatus>("/qq/launcher/status")
       setStatus(s)
@@ -35,43 +36,30 @@ export function QQLauncherPanel({ onConfigChange }: Props) {
     } finally {
       setLoading(false)
     }
-  }
-
-  useEffect(() => {
-    void refresh()
-    pollRef.current = window.setInterval(refresh, 4000)
-    return () => { if (pollRef.current) window.clearInterval(pollRef.current) }
   }, [])
 
-  const runInstall = async () => {
-    if (busy) return
-    setBusy("install")
-    const id = toast.loading("QCE 安装启动中...")
-    try {
-      const { task_id } = await fetchAPI<{ task_id: string }>(
-        "/qq/launcher/install", { method: "POST" }
-      )
-      const es = subscribeSSE<TaskProgress>(`/tasks/${task_id}/events`, (data) => {
-        toast.loading(data.message || data.status, { id })
-        if (data.status === "done") {
-          es.close()
-          toast.success(data.message || "安装完成", { id })
-          setBusy(null); void refresh()
-        } else if (data.status === "error") {
-          es.close()
-          toast.error(data.message || "安装失败", { id })
-          setBusy(null)
-        }
-      }, () => { toast.dismiss(id); setBusy(null) })
-    } catch (e) {
-      toast.error(getErrorMessage(e), { id })
-      setBusy(null)
+  // Niche panel: keep the 4s poll but pause it while the tab is hidden.
+  useEffect(() => {
+    void refresh()
+    const id = window.setInterval(() => { if (!document.hidden) void refresh() }, 4000)
+    const onVisible = () => { if (!document.hidden) void refresh() }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => {
+      window.clearInterval(id)
+      document.removeEventListener("visibilitychange", onVisible)
     }
-  }
+  }, [refresh])
+
+  const runInstall = () => run({
+    start: () => fetchAPI<{ task_id: string }>("/qq/launcher/install", { method: "POST" }),
+    taskType: "qq_install",
+    loadingText: "QCE 安装启动中...",
+    onDone: () => { void refresh() },
+  })
 
   const runStart = async () => {
     if (busy) return
-    setBusy("start")
+    setBusyAction("start")
     try {
       const s = await fetchAPI<QQLauncherStatus>("/qq/launcher/start", { method: "POST" })
       setStatus(s)
@@ -79,13 +67,13 @@ export function QQLauncherPanel({ onConfigChange }: Props) {
     } catch (e) {
       toast.error(getErrorMessage(e))
     } finally {
-      setBusy(null)
+      setBusyAction(null)
     }
   }
 
   const runStop = async () => {
     if (busy) return
-    setBusy("stop")
+    setBusyAction("stop")
     try {
       const s = await fetchAPI<QQLauncherStatus>("/qq/launcher/stop", { method: "POST" })
       setStatus(s)
@@ -93,7 +81,7 @@ export function QQLauncherPanel({ onConfigChange }: Props) {
     } catch (e) {
       toast.error(getErrorMessage(e))
     } finally {
-      setBusy(null)
+      setBusyAction(null)
     }
   }
 
@@ -166,7 +154,7 @@ export function QQLauncherPanel({ onConfigChange }: Props) {
       {docker.daemon && (
         <div className="flex flex-wrap items-center gap-2">
           {!status.installed && (
-            <Button size="sm" onClick={runInstall} disabled={!!busy}>
+            <Button size="sm" onClick={() => void runInstall()} disabled={!!busy}>
               {busy === "install" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                 : <Download className="mr-1.5 h-3.5 w-3.5" />}
               安装最新 QCE
@@ -180,7 +168,7 @@ export function QQLauncherPanel({ onConfigChange }: Props) {
             </Button>
           )}
           {status.installed && (
-            <Button variant="outline" size="sm" onClick={runInstall} disabled={!!busy}>
+            <Button variant="outline" size="sm" onClick={() => void runInstall()} disabled={!!busy}>
               {busy === "install" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                 : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
               更新

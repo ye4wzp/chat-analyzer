@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { Check, Lightbulb, Loader2, Plus, Sparkles, Star, Tags as TagsIcon, Trash2, Users, Wand2, X } from "lucide-react"
 import {
-  fetchAPI, getErrorMessage, subscribeSSE,
+  fetchAPI, getErrorMessage,
   type ChatInfo, type ContactTag, type ContactTagEntry, type ContactTagLink,
-  type TagSuggestion, type TaskProgress,
+  type TagSuggestion,
 } from "@/lib/api"
+import { useTaskRunner } from "@/hooks/useTaskRunner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -346,11 +347,12 @@ export default function Tags() {
   const [contacts, setContacts] = useState<ChatInfo[]>([])
   const [contactTags, setContactTags] = useState<ContactTagEntry[]>([])
   const [loading, setLoading] = useState(true)
-  const [batchRunning, setBatchRunning] = useState(false)
   const [search, setSearch] = useState("")
   const [filterTagId, setFilterTagId] = useState<number | null>(null)
   const [dialog, setDialog] = useState<{ platform: string; chatId: string; name: string } | null>(null)
   const [insight, setInsight] = useState<{ name: string; loading: boolean; text: string } | null>(null)
+  const { run: runTask, running } = useTaskRunner()
+  const batchRunning = running.has("tag")
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -370,6 +372,14 @@ export default function Tags() {
   }, [])
 
   useEffect(() => { void loadAll() }, [loadAll])
+
+  // Targeted refreshes for row-level mutations — never flip the page spinner.
+  const refreshTags = useCallback(async () => {
+    try { setTags(await fetchAPI<ContactTag[]>("/tags")) } catch { /* counts refresh best-effort */ }
+  }, [])
+  const refreshContactTags = useCallback(async () => {
+    try { setContactTags(await fetchAPI<ContactTagEntry[]>("/contacts/tags")) } catch { /* best-effort */ }
+  }, [])
 
   const activeTags = useMemo(() => tags.filter(t => t.status === "active"), [tags])
 
@@ -395,51 +405,59 @@ export default function Tags() {
     })
   }, [contacts, search, filterTagId, tagsByContact])
 
-  const runBatch = async () => {
-    if (batchRunning) return
-    setBatchRunning(true)
-    const id = toast.loading("启动批量打标签...")
-    try {
-      const { task_id } = await fetchAPI<{ task_id: string }>("/tags/suggest/batch", {
-        method: "POST", body: JSON.stringify({}),
-      })
-      const es = subscribeSSE<TaskProgress>(`/tasks/${task_id}/events`, (data) => {
-        toast.loading(data.message || data.status, { id })
-        if (data.status === "done") {
-          es.close(); toast.success(data.message || "完成", { id }); setBatchRunning(false)
-          void loadAll(); setView("review")
-        } else if (data.status === "error") {
-          es.close(); toast.error(data.message || "失败", { id }); setBatchRunning(false)
-        } else if (data.status === "cancelled") {
-          es.close(); toast.info(data.message || "已取消", { id }); setBatchRunning(false)
-        }
-      }, () => { toast.dismiss(id); setBatchRunning(false) })
-    } catch (e) {
-      toast.error(getErrorMessage(e), { id }); setBatchRunning(false)
-    }
-  }
+  const runBatch = () => runTask({
+    start: () => fetchAPI<{ task_id: string }>("/tags/suggest/batch", {
+      method: "POST", body: JSON.stringify({}),
+    }),
+    taskType: "tag",
+    loadingText: "启动批量打标签...",
+    onDone: async () => {
+      await loadAll()
+      setView("review")
+    },
+  })
 
   const reviewAct = async (action: "confirm" | "reject", linkIds: number[]) => {
     try {
       await fetchAPI(`/tags/${action}`, { method: "POST", body: JSON.stringify({ link_ids: linkIds }) })
+      const ids = new Set(linkIds)
+      setSuggestions(prev => prev.filter(s => !ids.has(s.link_id)))
       toast.success(action === "confirm" ? `已确认 ${linkIds.length} 个标签` : `已拒绝 ${linkIds.length} 个建议`)
-      await loadAll()
+      void refreshTags()
+      if (action === "confirm") void refreshContactTags()
     } catch (e) {
       toast.error(getErrorMessage(e))
     }
   }
 
-  const tagMutation = async (fn: () => Promise<unknown>): Promise<void> => {
+  const createTag = async (name: string) => {
     try {
-      await fn()
-      await loadAll()
+      await fetchAPI("/tags", { method: "POST", body: JSON.stringify({ name }) })
+      await refreshTags()
     } catch (e) {
       toast.error(getErrorMessage(e))
     }
   }
-  const createTag = (name: string) => tagMutation(() => fetchAPI("/tags", { method: "POST", body: JSON.stringify({ name }) }))
-  const approveTag = (tagId: number) => tagMutation(() => fetchAPI(`/tags/${tagId}`, { method: "PATCH", body: JSON.stringify({ status: "active" }) }))
-  const deleteTag = (tagId: number) => tagMutation(() => fetchAPI(`/tags/${tagId}`, { method: "DELETE" }))
+
+  const approveTag = async (tagId: number) => {
+    try {
+      await fetchAPI(`/tags/${tagId}`, { method: "PATCH", body: JSON.stringify({ status: "active" }) })
+      setTags(prev => prev.map(t => t.id === tagId ? { ...t, status: "active" } : t))
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    }
+  }
+
+  const deleteTag = async (tagId: number) => {
+    try {
+      await fetchAPI(`/tags/${tagId}`, { method: "DELETE" })
+      setTags(prev => prev.filter(t => t.id !== tagId))
+      setSuggestions(prev => prev.filter(s => s.tag_id !== tagId))
+      setContactTags(prev => prev.filter(e => e.tag_id !== tagId))
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    }
+  }
 
   const runInsight = async (tagId: number, name: string) => {
     setInsight({ name, loading: true, text: "" })
@@ -480,7 +498,7 @@ export default function Tags() {
             <TagsIcon className="h-6 w-6" />
             <h1 className="text-2xl font-semibold tracking-tight">联系人标签</h1>
           </div>
-          <Button onClick={() => void runBatch()} disabled={batchRunning}>
+          <Button onClick={() => { void runBatch() }} disabled={batchRunning}>
             {batchRunning ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1.5 h-4 w-4" />}
             {batchRunning ? "打标签中..." : "批量打标签"}
           </Button>
@@ -557,7 +575,7 @@ export default function Tags() {
           name={dialog.name}
           activeTags={activeTags}
           onClose={() => setDialog(null)}
-          onChanged={loadAll}
+          onChanged={() => { void refreshTags(); void refreshContactTags() }}
         />
       )}
 

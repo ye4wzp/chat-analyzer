@@ -1,10 +1,12 @@
 import { useState } from "react"
 import { toast } from "sonner"
-import { fetchAPI, getErrorMessage, subscribeSSE, type Config, type QQTestResponse, type TaskProgress } from "@/lib/api"
+import { fetchAPI, getErrorMessage, type Config, type QQTestResponse } from "@/lib/api"
+import { useTaskRunner } from "@/hooks/useTaskRunner"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Loader2, CheckCircle2, AlertCircle, Eye, EyeOff, ChevronDown, ChevronRight } from "lucide-react"
 import { QQLauncherPanel } from "./QQLauncherPanel"
+import { MASKED } from "@/lib/constants"
 
 interface Props {
   config: Config
@@ -18,11 +20,12 @@ export function QQCard({ config, onConfigChange }: Props) {
   const [showToken, setShowToken] = useState(false)
   const [testStatus, setTestStatus] = useState<"idle" | "loading" | "ok" | "fail">("idle")
   const [testResult, setTestResult] = useState<QQTestResponse | null>(null)
-  const [syncing, setSyncing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const { run, running } = useTaskRunner()
+  const syncing = running.has("sync_qq")
 
-  const isMasked = token === "********"
+  const isMasked = token === MASKED
   const enabled = config.qq.enabled
 
   const save = async (overrides: Partial<{ qq_enabled: boolean }> = {}) => {
@@ -61,29 +64,11 @@ export function QQCard({ config, onConfigChange }: Props) {
     }
   }
 
-  const sync = async () => {
-    if (syncing) return
-    setSyncing(true)
-    const id = toast.loading("QQ 同步启动中...")
-    try {
-      const { task_id } = await fetchAPI<{ task_id: string }>("/sync/qq", { method: "POST" })
-      const es = subscribeSSE<TaskProgress>(`/tasks/${task_id}/events`, (data) => {
-        toast.loading(data.message || data.status, { id })
-        if (data.status === "done") {
-          es.close()
-          toast.success(data.message || "同步完成", { id })
-          setSyncing(false)
-        } else if (data.status === "error") {
-          es.close()
-          toast.error(data.message || "同步失败", { id })
-          setSyncing(false)
-        }
-      }, () => { toast.dismiss(id); setSyncing(false) })
-    } catch (e) {
-      toast.error(getErrorMessage(e), { id })
-      setSyncing(false)
-    }
-  }
+  const sync = () => run({
+    start: () => fetchAPI<{ task_id: string }>("/sync/qq", { method: "POST" }),
+    taskType: "sync_qq",
+    loadingText: "QQ 同步启动中...",
+  })
 
   return (
     <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5">
@@ -184,7 +169,7 @@ export function QQCard({ config, onConfigChange }: Props) {
             {enabled ? "停用" : "启用"}
           </Button>
           <div className="ml-auto">
-            <Button size="sm" onClick={sync} disabled={syncing || !enabled}>
+            <Button size="sm" onClick={() => void sync()} disabled={syncing || !enabled}>
               {syncing && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}立即同步
             </Button>
           </div>

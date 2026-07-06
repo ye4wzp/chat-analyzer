@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
-import { BarChart3, Bell, Bookmark, Bot, CalendarDays, Filter, Hash, Loader2, Menu, MessageSquare, MoreHorizontal, Pin, Search, Send, Sparkles, Star, TrendingUp, Users } from "lucide-react"
+import { BarChart3, Bookmark, Bot, Hash, Loader2, Menu, Pin, Search, Send, Sparkles, Star, TrendingUp, Users } from "lucide-react"
 import { fetchAPI, getErrorMessage, type ChatInfo, type Config, type Message } from "@/lib/api"
 import { formatTime } from "@/lib/utils"
 import { CategoryBadge, UrgencyBadge } from "@/components/MessageBadges"
@@ -81,9 +81,8 @@ function ChatPicker({ chats, loading, selected, onSelect, search, setSearch, pla
             {modeLabel}
           </button>
         </div>
-        <div className="mb-3 grid grid-cols-3 rounded-lg bg-[var(--color-secondary)] p-1 text-center text-xs">
+        <div className="mb-3 grid grid-cols-2 rounded-lg bg-[var(--color-secondary)] p-1 text-center text-xs">
           <span className="rounded-md bg-[var(--color-card)] px-2 py-1 font-medium text-[var(--color-primary)] shadow-sm">全部 {chats.length}</span>
-          <span className="px-2 py-1 text-[var(--color-muted-foreground)]">未读 12</span>
           <span className="px-2 py-1 text-[var(--color-muted-foreground)]">重要 {filterChats.size}</span>
         </div>
         <div className="relative mb-2">
@@ -128,12 +127,7 @@ function ChatPicker({ chats, loading, selected, onSelect, search, setSearch, pla
                     {PLATFORM_LABEL[c.platform] || c.platform} · {c.chat_type === "group" ? "群聊" : "私聊"} · {c.msg_count.toLocaleString()} 条
                   </p>
                 </div>
-                <div className="text-right">
-                  <p className="text-xs text-[var(--color-muted-foreground)]">{formatTime(c.latest)}</p>
-                  <span className="mt-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--color-primary)] px-1.5 text-[10px] font-medium text-white">
-                    {Math.max(1, c.msg_count % 13)}
-                  </span>
-                </div>
+                <p className="text-right text-xs text-[var(--color-muted-foreground)]">{formatTime(c.latest)}</p>
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); onToggleChat(c.chat_name) }}
@@ -154,7 +148,7 @@ function ChatPicker({ chats, loading, selected, onSelect, search, setSearch, pla
 }
 
 export default function Chats() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { open } = useDetailPanel()
   const [chats, setChats] = useState<ChatInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
@@ -171,52 +165,41 @@ export default function Chats() {
   const [filterChats, setFilterChats] = useState<Set<string>>(new Set())
   const [profileOpen, setProfileOpen] = useState(false)
   const msgOffsetRef = useRef(0)
+  const msgReqRef = useRef(0)
   const analyze = useAnalyzeRunner()
 
   const loadMessages = useCallback(async (chat: ChatInfo, append = false) => {
+    const reqId = ++msgReqRef.current
     setLoadingMsgs(true)
     try {
       const params = new URLSearchParams({
         platform: chat.platform,
         chat_id: chat.chat_id,
-        limit: String(PAGE_SIZE),
+        limit: String(PAGE_SIZE + 1),
       })
       if (append) params.set("offset", String(msgOffsetRef.current))
       const data = await fetchAPI<Message[]>(`/messages?${params}`)
+      if (reqId !== msgReqRef.current) return
+      const page = data.slice(0, PAGE_SIZE)
       if (append) {
-        setMessages(prev => [...prev, ...data])
-        msgOffsetRef.current += data.length
+        setMessages(prev => [...prev, ...page])
+        msgOffsetRef.current += page.length
       } else {
-        setMessages(data)
-        msgOffsetRef.current = data.length
+        setMessages(page)
+        msgOffsetRef.current = page.length
       }
-      setMsgHasMore(data.length === PAGE_SIZE)
+      setMsgHasMore(data.length > PAGE_SIZE)
     } catch (e: unknown) {
-      setError(getErrorMessage(e))
+      if (reqId === msgReqRef.current) setError(getErrorMessage(e))
     } finally {
-      setLoadingMsgs(false)
+      if (reqId === msgReqRef.current) setLoadingMsgs(false)
     }
   }, [])
 
   useEffect(() => {
     let cancelled = false
     fetchAPI<ChatInfo[]>("/chats")
-      .then(data => {
-        if (cancelled) return
-        setChats(data)
-        const platformParam = searchParams.get("platform")
-        const chatIdParam = searchParams.get("chat_id")
-        const chatParam = searchParams.get("chat")
-        const found = platformParam && chatIdParam
-          ? data.find(c => c.platform === platformParam && c.chat_id === chatIdParam)
-          : chatParam
-            ? data.find(c => c.chat_name === chatParam)
-            : data[0]
-        if (found) {
-          setSelectedChat(found)
-          void loadMessages(found)
-        }
-      })
+      .then(data => { if (!cancelled) setChats(data) })
       .catch((e: unknown) => {
         if (!cancelled) setError(getErrorMessage(e))
       })
@@ -224,7 +207,27 @@ export default function Chats() {
         if (!cancelled) setLoadingChats(false)
       })
     return () => { cancelled = true }
-  }, [searchParams, loadMessages])
+  }, [])
+
+  // Selection is URL-driven (?platform=&chat_id=) so deep links and back/forward work.
+  useEffect(() => {
+    if (chats.length === 0) return
+    const platformParam = searchParams.get("platform")
+    const chatIdParam = searchParams.get("chat_id")
+    const chatParam = searchParams.get("chat")
+    const found = platformParam && chatIdParam
+      ? chats.find(c => c.platform === platformParam && c.chat_id === chatIdParam)
+      : chatParam
+        ? chats.find(c => c.chat_name === chatParam)
+        : chats[0]
+    if (!found) return
+    if (selectedChat && selectedChat.platform === found.platform && selectedChat.chat_id === found.chat_id) return
+    setSelectedChat(found)
+    setMessages([])
+    setMessageSearch("")
+    msgOffsetRef.current = 0
+    void loadMessages(found)
+  }, [chats, searchParams, selectedChat, loadMessages])
 
   useEffect(() => {
     let cancelled = false
@@ -239,22 +242,29 @@ export default function Chats() {
   const toggleFilterChat = useCallback(async (chatName: string) => {
     if (!chatName) return
     const inList = filterChats.has(chatName)
-    const next = new Set(filterChats)
-    if (inList) next.delete(chatName); else next.add(chatName)
-    setFilterChats(next)
+    setFilterChats(prev => {
+      const next = new Set(prev)
+      if (inList) next.delete(chatName); else next.add(chatName)
+      return next
+    })
     try {
       await fetchAPI<Config>("/config", {
         method: "PUT",
         body: JSON.stringify(inList ? { remove_chat: chatName } : { add_chat: chatName }),
       })
     } catch (e) {
-      setFilterChats(filterChats)
+      setFilterChats(prev => {
+        const next = new Set(prev)
+        if (inList) next.add(chatName); else next.delete(chatName)
+        return next
+      })
       toast.error(getErrorMessage(e))
     }
   }, [filterChats])
 
   const toggleFilterMode = useCallback(async () => {
-    const next = filterMode === "whitelist" ? "blacklist" : "whitelist"
+    const prevMode = filterMode
+    const next = prevMode === "whitelist" ? "blacklist" : "whitelist"
     setFilterMode(next)
     try {
       await fetchAPI<Config>("/config", {
@@ -263,18 +273,20 @@ export default function Chats() {
       })
       toast.success(`已切换到${next === "whitelist" ? "白名单" : "黑名单"}模式`)
     } catch (e) {
-      setFilterMode(filterMode)
+      setFilterMode(m => (m === next ? prevMode : m))
       toast.error(getErrorMessage(e))
     }
   }, [filterMode])
 
   const selectChat = (chat: ChatInfo) => {
-    setSelectedChat(chat)
-    setMessages([])
-    setMessageSearch("")
-    msgOffsetRef.current = 0
     setPickerOpen(false)
-    void loadMessages(chat)
+    setSearchParams(prev => {
+      const p = new URLSearchParams(prev)
+      p.set("platform", chat.platform)
+      p.set("chat_id", chat.chat_id)
+      p.delete("chat")
+      return p
+    }, { replace: true })
   }
 
   const filteredChats = chats.filter(c => {
@@ -374,9 +386,6 @@ export default function Chats() {
                   >
                     <Pin className="h-4 w-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" title="提醒">
-                    <Bell className="h-4 w-4" />
-                  </Button>
                   <Button variant="outline" size="sm" onClick={() => setProfileOpen(true)}>
                     <BarChart3 className="mr-1.5 h-3.5 w-3.5" />
                     画像
@@ -388,9 +397,6 @@ export default function Chats() {
                   >
                     {analyze.running ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
                     分析此聊天
-                  </Button>
-                  <Button variant="ghost" size="icon" title="更多">
-                    <MoreHorizontal className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
@@ -448,20 +454,6 @@ export default function Chats() {
               )}
             </div>
 
-            <div className="grid shrink-0 grid-cols-3 border-t border-[var(--color-border)] bg-[var(--color-card)] text-sm">
-              <button className="flex items-center justify-center gap-2 border-r border-[var(--color-border)] px-4 py-3 font-medium text-[var(--color-primary)]">
-                <MessageSquare className="h-4 w-4" />
-                原始消息 <span className="text-[var(--color-muted-foreground)]">{messages.length.toLocaleString()}</span>
-              </button>
-              <button className="flex items-center justify-center gap-2 border-r border-[var(--color-border)] px-4 py-3 text-[var(--color-muted-foreground)]">
-                <Sparkles className="h-4 w-4" />
-                摘要 <span>{summaryCount.toLocaleString()}</span>
-              </button>
-              <button className="flex items-center justify-center gap-2 px-4 py-3 text-[var(--color-muted-foreground)]">
-                <Hash className="h-4 w-4" />
-                关键词命中 <span>{importantCount.toLocaleString()}</span>
-              </button>
-            </div>
           </>
         )}
       </main>
@@ -472,34 +464,14 @@ export default function Chats() {
             <h2 className="text-sm font-semibold">筛选条件</h2>
             <button onClick={() => setMessageSearch("")} className="text-xs font-medium text-[var(--color-primary)]">重置</button>
           </div>
-          <div className="space-y-4">
-            <div>
-              <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-[var(--color-muted-foreground)]"><Hash className="h-3.5 w-3.5" />关键词筛选</p>
-              <Input value={messageSearch} onChange={e => setMessageSearch(e.target.value)} placeholder="输入关键词" className="h-10 rounded-lg bg-[var(--color-background)]" />
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {["改版", "性能", "部署"].map(k => (
-                  <button key={k} onClick={() => setMessageSearch(k)} className="rounded-full bg-[var(--color-secondary)] px-2.5 py-1 text-xs text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]">{k}</button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-[var(--color-muted-foreground)]"><CalendarDays className="h-3.5 w-3.5" />时间范围</p>
-              <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm text-[var(--color-muted-foreground)]">最近 7 天</div>
-            </div>
-            <div>
-              <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-[var(--color-muted-foreground)]"><Filter className="h-3.5 w-3.5" />重要程度</p>
-              <div className="flex gap-2 text-xs">
-                <span className="rounded-full bg-[var(--color-primary-subtle)] px-2 py-1 text-[var(--color-primary)]">全部</span>
-                <span className="rounded-full bg-[var(--color-destructive-subtle)] px-2 py-1 text-[var(--color-destructive)]">重要</span>
-                <span className="rounded-full bg-[var(--color-warning-subtle)] px-2 py-1 text-[var(--color-warning)]">中等</span>
-                <span className="rounded-full bg-[var(--color-success-subtle)] px-2 py-1 text-[var(--color-success)]">低</span>
-              </div>
-            </div>
+          <div>
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-[var(--color-muted-foreground)]"><Hash className="h-3.5 w-3.5" />关键词筛选</p>
+            <Input value={messageSearch} onChange={e => setMessageSearch(e.target.value)} placeholder="输入关键词" className="h-10 rounded-lg bg-[var(--color-background)]" />
           </div>
         </section>
 
         <section className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
-          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold"><Bot className="h-4 w-4 text-[var(--color-primary)]" />AI 观察</h2>
+          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold"><Bot className="h-4 w-4 text-[var(--color-primary)]" />AI 观察 · 基于已加载消息</h2>
           <div className="space-y-3">
             <div className="rounded-xl bg-[var(--color-primary-subtle)] p-3">
               <p className="text-sm font-medium text-[var(--color-primary)]">高频话题</p>

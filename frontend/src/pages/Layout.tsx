@@ -1,9 +1,12 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom"
-import { LayoutDashboard, MessagesSquare, Settings, Search, RefreshCw, Upload, Sparkles, BookOpen, Clock, Menu, X, Inbox, Play, SlidersHorizontal, ChevronDown, Tags as TagsIcon, ListChecks, Sun, Moon } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
-import { toast } from "sonner"
-import { fetchAPI, getErrorMessage, subscribeSSE, type TaskProgress, type PendingKnowledge } from "@/lib/api"
+import { LayoutDashboard, MessagesSquare, Settings, Search, RefreshCw, Upload, Sparkles, BookOpen, Clock, Menu, X, Inbox, Play, Tags as TagsIcon, ListChecks, Sun, Moon } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { toast, Toaster } from "sonner"
+import { fetchAPI, getErrorMessage, type SyncHealth } from "@/lib/api"
 import { DetailPanelProvider, useDetailPanel } from "@/lib/DetailPanelContext"
+import { GlobalEventsProvider, useGlobalEvents } from "@/lib/GlobalEventsContext"
+import { formatRelative } from "@/lib/utils"
+import { useAnalyzeRunner } from "@/hooks/useAnalyzeRunner"
 import { KnowledgeReviewModal } from "@/components/KnowledgeReviewModal"
 import { GlobalTaskBar } from "@/components/GlobalTaskBar"
 import { NotificationBell } from "@/components/NotificationBell"
@@ -20,52 +23,76 @@ const nav = [
   { to: "/settings", label: "设置", icon: Settings },
 ]
 
-const TASK_TITLE: Record<string, string> = {
-  "/sync/wechat": "微信同步",
-  "/sync/all": "全平台同步",
-  "/analyze": "AI 分析",
-}
+function SyncStatusCard({ onSync }: { onSync: () => void }) {
+  const { tasks } = useGlobalEvents()
+  const [health, setHealth] = useState<SyncHealth | null>(null)
 
-// Maps the runTask endpoint to the backend task type used in /api/tasks payloads.
-// Keeps the per-endpoint lock semantically aligned with the server's notion of "running".
-const ENDPOINT_TASK_TYPE: Record<string, string> = {
-  "/sync/wechat": "sync_wechat",
-  "/analyze": "analyze",
-}
+  const load = useCallback(() => {
+    fetchAPI<SyncHealth>("/sync/health").then(setHealth).catch(() => {})
+  }, [])
 
-function ThemeToggle() {
-  const [theme, setTheme] = useState<"dark" | "light">(
-    () => (typeof document !== "undefined" && document.documentElement.dataset.theme === "light") ? "light" : "dark",
-  )
-  const toggle = () => {
-    const next = theme === "dark" ? "light" : "dark"
-    document.documentElement.dataset.theme = next
-    try { localStorage.setItem("ca-theme", next) } catch { /* private mode */ }
-    setTheme(next)
-  }
+  useEffect(() => { load() }, [load])
+
+  // Refresh whenever a sync task reaches "done".
+  const syncDoneKey = tasks
+    .filter(t => t.type.startsWith("sync") && t.status === "done")
+    .map(t => t.id)
+    .join(",")
+  useEffect(() => { if (syncDoneKey) load() }, [syncDoneKey, load])
+
+  const platforms = health?.platforms ?? []
+  const lastSync = platforms
+    .map(p => p.last_sync)
+    .filter((v): v is string => !!v)
+    .sort()
+    .pop()
+
   return (
-    <button
-      onClick={toggle}
-      title={theme === "dark" ? "切换到浅色" : "切换到深色"}
-      aria-label="切换主题"
-      className="flex h-11 w-11 items-center justify-center rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-muted-foreground)] shadow-sm transition-colors hover:bg-[var(--color-accent)] hover:text-[var(--color-foreground)]"
-    >
-      {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-    </button>
+    <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
+      <div className="mb-2 flex items-center gap-2 text-xs font-medium">
+        <span className={`h-1.5 w-1.5 rounded-full ${platforms.length ? "bg-[var(--color-success)]" : "bg-[var(--color-muted-foreground)]"}`} />
+        数据状态
+        {platforms.length > 0 && (
+          <span className="ml-auto rounded-full bg-[var(--color-success-subtle)] px-2 py-0.5 text-[10px] text-[var(--color-success)]">已同步</span>
+        )}
+      </div>
+      <div className="space-y-1 text-xs text-[var(--color-muted-foreground)]">
+        {platforms.length === 0 ? (
+          <p>尚未同步</p>
+        ) : (
+          <>
+            <div className="flex justify-between"><span>最后同步</span><span>{lastSync ? formatRelative(lastSync) : "未知"}</span></div>
+            <div className="flex justify-between"><span>数据源</span><span>{platforms.length} 个平台</span></div>
+          </>
+        )}
+      </div>
+      <button
+        onClick={onSync}
+        className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card-elevated)] px-3 py-2 text-xs font-medium text-[var(--color-foreground)] transition-colors hover:bg-[var(--color-accent)]"
+      >
+        <RefreshCw className="h-3.5 w-3.5" />
+        立即同步
+      </button>
+    </div>
   )
 }
 
 function Inner() {
   const { content, close } = useDetailPanel()
   const navigate = useNavigate()
-  const [pendingKnowledge, setPendingKnowledge] = useState<PendingKnowledge[] | null>(null)
-  const [pendingTaskId, setPendingTaskId] = useState("")
-  const [pendingSummary, setPendingSummary] = useState("")
-  // Per-type lock: a running wechat sync no longer blocks an analyze trigger.
-  const [runningTypes, setRunningTypes] = useState<Set<string>>(new Set())
+  const analyze = useAnalyzeRunner()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
-  const esRef = useRef<EventSource | null>(null)
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (typeof document !== "undefined" && document.documentElement.dataset.theme === "light") ? "light" : "dark",
+  )
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark"
+    document.documentElement.dataset.theme = next
+    try { localStorage.setItem("ca-theme", next) } catch { /* private mode */ }
+    setTheme(next)
+  }
 
   // Mobile detail sheet auto-opens when content arrives, auto-closes on close()
   useEffect(() => { if (content) setDetailOpen(true) }, [content])
@@ -80,60 +107,12 @@ function Inner() {
         toast.info("没有可启动的同步（可能正在运行）", { id: toastId })
       } else {
         const names = res.tasks.map(t => ({
-          sync_wechat: "微信", sync_qq: "QQ", sync_telegram: "Telegram",
+          sync_wechat: "微信", sync_qq: "QQ", sync_telegram: "Telegram", sync_all: "全平台",
         }[t.type] ?? t.type)).join(" + ")
         toast.success(`已启动: ${names}（在底部任务栏查看进度）`, { id: toastId })
       }
     } catch (e: unknown) {
       toast.error(getErrorMessage(e), { id: toastId })
-    }
-  }
-
-  const runTask = async (endpoint: string, body?: Record<string, string>) => {
-    const taskType = ENDPOINT_TASK_TYPE[endpoint] ?? endpoint
-    if (runningTypes.has(taskType)) return
-    setRunningTypes(prev => new Set(prev).add(taskType))
-    const release = () => setRunningTypes(prev => {
-      const next = new Set(prev); next.delete(taskType); return next
-    })
-    const title = TASK_TITLE[endpoint] || "任务"
-    const toastId = toast.loading(`${title}启动中...`)
-    try {
-      const { task_id } = await fetchAPI<{ task_id: string }>(endpoint, {
-        method: "POST",
-        body: body ? JSON.stringify(body) : undefined,
-      })
-      esRef.current?.close()
-      esRef.current = subscribeSSE<TaskProgress>(`/tasks/${task_id}/events`, async (data) => {
-        toast.loading(data.message || data.status, { id: toastId })
-        if (data.status === "done") {
-          esRef.current?.close()
-          if (endpoint === "/analyze") {
-            try {
-              const results = await fetchAPI<PendingKnowledge[]>(`/analyze/${task_id}/results`)
-              setPendingKnowledge(results)
-              setPendingTaskId(task_id)
-              setPendingSummary(data.summary || "")
-            } catch { /* ignore */ }
-          }
-          toast.success(data.message || "完成", { id: toastId })
-          release()
-        } else if (data.status === "error") {
-          esRef.current?.close()
-          toast.error(data.message || "失败", { id: toastId })
-          release()
-        } else if (data.status === "cancelled") {
-          esRef.current?.close()
-          toast.info(data.message || "已取消", { id: toastId })
-          release()
-        }
-      }, () => {
-        toast.dismiss(toastId)
-        release()
-      })
-    } catch (e: unknown) {
-      toast.error(getErrorMessage(e), { id: toastId })
-      release()
     }
   }
 
@@ -175,24 +154,7 @@ function Inner() {
         </nav>
 
         <div className="mt-auto px-4 pb-4 pt-4 flex flex-col gap-3">
-          <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
-            <div className="mb-2 flex items-center gap-2 text-xs font-medium">
-              <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-success)]" />
-              数据状态
-              <span className="ml-auto rounded-full bg-[var(--color-success-subtle)] px-2 py-0.5 text-[10px] text-[var(--color-success)]">已同步</span>
-            </div>
-            <div className="space-y-1 text-xs text-[var(--color-muted-foreground)]">
-              <div className="flex justify-between"><span>最后同步</span><span>刚刚</span></div>
-              <div className="flex justify-between"><span>数据源</span><span>3 个平台</span></div>
-            </div>
-            <button
-              onClick={() => { void runSyncAll() }}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card-elevated)] px-3 py-2 text-xs font-medium text-[var(--color-foreground)] transition-colors hover:bg-[var(--color-accent)]"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              立即同步
-            </button>
-          </div>
+          <SyncStatusCard onSync={() => { void runSyncAll() }} />
           <div className="border-t border-[var(--color-border)] pt-3 flex flex-col gap-1">
           <button
             onClick={() => { void runSyncAll() }}
@@ -209,22 +171,14 @@ function Inner() {
             数据源
           </button>
           <button
-            onClick={() => { void runTask("/analyze") }}
-            disabled={runningTypes.has("analyze")}
+            onClick={() => { void analyze.run() }}
+            disabled={analyze.running}
             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors text-left text-[var(--color-muted-foreground)] hover:bg-[var(--color-card)] hover:text-[var(--color-foreground)] disabled:opacity-50 disabled:pointer-events-none"
           >
             <Sparkles className="h-4 w-4 shrink-0" />
             运行分析
           </button>
           </div>
-          <button className="flex w-full items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-2.5 text-left shadow-sm">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--color-surface-3)] text-xs font-semibold text-[var(--color-foreground)]">张</div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">张明</p>
-              <p className="truncate text-xs text-[var(--color-muted-foreground)]">本地模式</p>
-            </div>
-            <ChevronDown className="h-3.5 w-3.5 text-[var(--color-muted-foreground)]" />
-          </button>
         </div>
       </aside>
 
@@ -244,13 +198,14 @@ function Inner() {
           >
             <Search className="h-4 w-4" />
             <span className="flex-1">搜索群聊、联系人、关键词...</span>
-            <span className="rounded border border-[var(--color-border)] px-1.5 py-0.5 text-xs">⌘ K</span>
           </button>
-          <ThemeToggle />
-          <button className="flex h-11 items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-4 text-sm text-[var(--color-foreground)] shadow-sm">
-            <SlidersHorizontal className="h-4 w-4 text-[var(--color-muted-foreground)]" />
-            全部平台
-            <ChevronDown className="h-3.5 w-3.5 text-[var(--color-muted-foreground)]" />
+          <button
+            onClick={toggleTheme}
+            title={theme === "dark" ? "切换到浅色" : "切换到深色"}
+            aria-label="切换主题"
+            className="flex h-11 w-11 items-center justify-center rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-muted-foreground)] shadow-sm transition-colors hover:bg-[var(--color-accent)] hover:text-[var(--color-foreground)]"
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </button>
           <button
             onClick={() => { void runSyncAll() }}
@@ -260,8 +215,8 @@ function Inner() {
             同步
           </button>
           <button
-            onClick={() => { void runTask("/analyze") }}
-            disabled={runningTypes.has("analyze")}
+            onClick={() => { void analyze.run() }}
+            disabled={analyze.running}
             className="flex h-11 items-center gap-2 rounded-lg bg-[var(--color-primary)] px-5 text-sm font-semibold text-[var(--color-primary-foreground)] shadow-md transition-colors hover:bg-[var(--color-primary-hover)] disabled:opacity-50"
           >
             <Play className="h-4 w-4 fill-current" />
@@ -301,15 +256,17 @@ function Inner() {
         <div className="overflow-y-auto p-5">{content}</div>
       </Sheet>
 
-      {pendingKnowledge && (
+      {analyze.modalProps.results && (
         <KnowledgeReviewModal
-          taskId={pendingTaskId}
-          results={pendingKnowledge}
-          summary={pendingSummary}
-          onClose={() => setPendingKnowledge(null)}
-          onSaved={() => setPendingKnowledge(null)}
+          taskId={analyze.modalProps.taskId}
+          results={analyze.modalProps.results}
+          summary={analyze.modalProps.summary}
+          onClose={analyze.modalProps.onClose}
+          onSaved={analyze.modalProps.onSaved}
         />
       )}
+
+      <Toaster theme={theme} richColors position="bottom-right" closeButton />
     </div>
   )
 }
@@ -317,7 +274,9 @@ function Inner() {
 export default function Layout() {
   return (
     <DetailPanelProvider>
-      <Inner />
+      <GlobalEventsProvider>
+        <Inner />
+      </GlobalEventsProvider>
     </DetailPanelProvider>
   )
 }

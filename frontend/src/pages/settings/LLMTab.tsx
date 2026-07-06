@@ -1,10 +1,12 @@
 import { useState } from "react"
+import { toast } from "sonner"
 import { fetchAPI, getErrorMessage, type LLMModelsResponse } from "@/lib/api"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
 import { CheckCircle, AlertTriangle } from "lucide-react"
+import { MASKED } from "@/lib/constants"
 
 interface Props {
   provider: string
@@ -31,10 +33,11 @@ export function LLMTab({ provider, url, model, apiKey, embeddingModel, setProvid
         llm_provider: provider,
         llm_api_url: url,
         llm_model: model,
-        llm_api_key: apiKey === "********" ? undefined : apiKey,
+        llm_api_key: apiKey === MASKED ? undefined : apiKey,
         llm_embedding_model: embeddingModel,
       }),
     })
+    toast.success("模型配置已保存")
   }
 
   const fetchModels = async () => {

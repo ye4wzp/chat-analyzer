@@ -103,6 +103,7 @@ export default function Timeline() {
   const [hasMore, setHasMore] = useState(true)
   const [filterOpen, setFilterOpen] = useState(false)
   const offsetRef = useRef(0)
+  const reqRef = useRef(0)
 
   useEffect(() => {
     fetchAPI<ChatInfo[]>("/chats")
@@ -112,9 +113,10 @@ export default function Timeline() {
   }, [])
 
   const loadMessages = useCallback(async (append = false) => {
+    const reqId = ++reqRef.current
     setLoading(true)
     try {
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE) })
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE + 1) })
       if (selectedChat) {
         params.set("platform", selectedChat.platform)
         params.set("chat_id", selectedChat.chat_id)
@@ -126,18 +128,20 @@ export default function Timeline() {
       if (append) params.set("offset", String(offsetRef.current))
 
       const data = await fetchAPI<Message[]>(`/messages?${params}`)
+      if (reqId !== reqRef.current) return
+      const page = data.slice(0, PAGE_SIZE)
       if (append) {
-        setMessages(prev => [...prev, ...data])
-        offsetRef.current += data.length
+        setMessages(prev => [...prev, ...page])
+        offsetRef.current += page.length
       } else {
-        setMessages(data)
-        offsetRef.current = data.length
+        setMessages(page)
+        offsetRef.current = page.length
       }
-      setHasMore(data.length === PAGE_SIZE)
+      setHasMore(data.length > PAGE_SIZE)
     } catch (e) {
       console.error(getErrorMessage(e))
     } finally {
-      setLoading(false)
+      if (reqId === reqRef.current) setLoading(false)
     }
   }, [selectedChat, platform, since, until])
 

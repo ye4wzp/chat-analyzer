@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react"
 import { Activity, ChevronDown, X, Loader2, CheckCircle2, AlertCircle, Square } from "lucide-react"
 import { toast } from "sonner"
-import { fetchAPI, getErrorMessage, type TaskState } from "@/lib/api"
+import { fetchAPI, getErrorMessage } from "@/lib/api"
+import { useGlobalEvents } from "@/lib/GlobalEventsContext"
 import { cn } from "@/lib/utils"
 
-const POLL_MS = 1500
 const TASK_LABEL: Record<string, string> = {
   sync_wechat: "微信同步",
   sync_qq: "QQ 同步",
@@ -14,6 +14,8 @@ const TASK_LABEL: Record<string, string> = {
   analyze: "AI 分析",
   qq_install: "QQ 启动器安装",
   embed: "Embedding 索引",
+  tag: "批量打标签",
+  sync_all: "全平台同步",
 }
 
 function StatusIcon({ status }: { status: string }) {
@@ -25,22 +27,18 @@ function StatusIcon({ status }: { status: string }) {
 }
 
 export function GlobalTaskBar() {
-  const [tasks, setTasks] = useState<TaskState[]>([])
+  const { tasks } = useGlobalEvents()
   const [expanded, setExpanded] = useState(false)
   const [hidden, setHidden] = useState<Set<string>>(new Set())
 
+  // Prune dismissed ids once their tasks fall out of the backend list.
   useEffect(() => {
-    let alive = true
-    const tick = async () => {
-      try {
-        const data = await fetchAPI<TaskState[]>("/tasks")
-        if (alive) setTasks(data)
-      } catch { /* ignore */ }
-    }
-    void tick()
-    const id = window.setInterval(tick, POLL_MS)
-    return () => { alive = false; window.clearInterval(id) }
-  }, [])
+    setHidden(prev => {
+      const alive = new Set(tasks.map(t => t.id))
+      const next = new Set([...prev].filter(id => alive.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [tasks])
 
   const visible = tasks.filter(t => !hidden.has(t.id))
   const running = visible.filter(t => t.status === "running")

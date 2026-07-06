@@ -1,26 +1,10 @@
-import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { Bell } from "lucide-react"
-import { fetchAPI } from "@/lib/api"
-
-const POLL_MS = 8000  // gentle — bell badge updates every 8s
+import { useGlobalEvents } from "@/lib/GlobalEventsContext"
 
 export function NotificationBell() {
-  const [count, setCount] = useState(0)
+  const { unread: count } = useGlobalEvents()
   const navigate = useNavigate()
-
-  useEffect(() => {
-    let cancelled = false
-    const tick = async () => {
-      try {
-        const r = await fetchAPI<{ count: number }>("/inbox/unread_count")
-        if (!cancelled) setCount(r.count)
-      } catch { /* offline / empty DB — silent */ }
-    }
-    void tick()
-    const id = window.setInterval(tick, POLL_MS)
-    return () => { cancelled = true; window.clearInterval(id) }
-  }, [])
 
   return (
     <button

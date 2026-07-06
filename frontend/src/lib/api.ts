@@ -1,36 +1,138 @@
 const API_BASE = "/api"
 
+function apiToken(): string {
+  try { return localStorage.getItem("apiToken") || "" } catch { return "" }
+}
+
+// EventSource can't send headers — SSE URLs carry the token as a query param.
+function sseUrl(path: string): string {
+  const token = apiToken()
+  if (!token) return `${API_BASE}${path}`
+  return `${API_BASE}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
+}
+
 export async function fetchAPI<T>(path: string, opts?: RequestInit): Promise<T> {
+  const token = apiToken()
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...opts?.headers },
     ...opts,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { "X-API-Token": token } : {}),
+      ...opts?.headers,
+    },
   })
   if (!res.ok) {
-    const err = await res.text()
-    throw new Error(err || res.statusText)
+    const text = await res.text()
+    let detail = ""
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown }
+      if (typeof parsed.detail === "string") detail = parsed.detail
+      else if (parsed.detail != null) detail = JSON.stringify(parsed.detail)
+    } catch { /* not JSON */ }
+    throw new Error(detail || text || res.statusText)
   }
   return res.json()
 }
 
-// SSE helper for long-running tasks
+const SSE_MAX_RETRIES = 6
+
+// SSE helper for long-running tasks. Reconnects with capped backoff; onError
+// fires only after retries are exhausted. Returns an unsubscribe function.
 export function subscribeSSE<T = unknown>(
   path: string,
   onMessage: (data: T) => void,
-  onError?: (err: Event) => void,
-): EventSource {
-  const es = new EventSource(`${API_BASE}${path}`)
-  es.onmessage = (e) => {
-    try {
-      onMessage(JSON.parse(e.data) as T)
-    } catch {
-      onMessage(e.data as T)
+  onError?: () => void,
+): () => void {
+  let es: EventSource | null = null
+  let attempts = 0
+  let timer: number | undefined
+  let closed = false
+
+  const connect = () => {
+    es = new EventSource(sseUrl(path))
+    es.onopen = () => { attempts = 0 }
+    es.onmessage = (e) => {
+      try {
+        onMessage(JSON.parse(e.data) as T)
+      } catch {
+        onMessage(e.data as T)
+      }
+    }
+    es.onerror = () => {
+      es?.close()
+      if (closed) return
+      if (attempts >= SSE_MAX_RETRIES) {
+        closed = true
+        onError?.()
+        return
+      }
+      timer = window.setTimeout(connect, Math.min(1000 * 2 ** attempts, 10_000))
+      attempts += 1
     }
   }
-  es.onerror = (e) => {
-    es.close()
-    onError?.(e)
+  connect()
+  return () => {
+    closed = true
+    window.clearTimeout(timer)
+    es?.close()
   }
-  return es
+}
+
+export interface GlobalEventsData {
+  tasks: TaskState[]
+  unread: number
+}
+
+// Session-length /api/events channel: reconnects forever, and polls the REST
+// fallbacks every 5s only while the SSE connection is down.
+export function subscribeGlobalEvents(onData: (d: GlobalEventsData) => void): () => void {
+  let es: EventSource | null = null
+  let closed = false
+  let attempts = 0
+  let retryTimer: number | undefined
+  let pollTimer: number | undefined
+
+  const poll = async () => {
+    try {
+      const [tasks, unread] = await Promise.all([
+        fetchAPI<TaskState[]>("/tasks"),
+        fetchAPI<{ count: number }>("/inbox/unread_count"),
+      ])
+      if (!closed) onData({ tasks, unread: unread.count })
+    } catch { /* backend down — next tick retries */ }
+  }
+
+  const stopPolling = () => {
+    if (pollTimer !== undefined) {
+      window.clearInterval(pollTimer)
+      pollTimer = undefined
+    }
+  }
+
+  const connect = () => {
+    es = new EventSource(sseUrl("/events"))
+    es.onopen = () => { attempts = 0; stopPolling() }
+    es.onmessage = (e) => {
+      try { onData(JSON.parse(e.data) as GlobalEventsData) } catch { /* malformed frame */ }
+    }
+    es.onerror = () => {
+      es?.close()
+      if (closed) return
+      if (pollTimer === undefined) {
+        void poll()
+        pollTimer = window.setInterval(() => { void poll() }, 5000)
+      }
+      retryTimer = window.setTimeout(connect, Math.min(1000 * 2 ** Math.min(attempts, 10), 10_000))
+      attempts += 1
+    }
+  }
+  connect()
+  return () => {
+    closed = true
+    window.clearTimeout(retryTimer)
+    stopPolling()
+    es?.close()
+  }
 }
 
 export interface Message {
@@ -85,8 +187,10 @@ export interface TelegramConfig {
 export interface Config {
   daily_token_budget: number
   budget_action: string
+  api_token?: string  // "********" when set
   vip_contacts: string[]
   keywords?: string[]
+  semantic_triggers?: SemanticTrigger[]
   chat_filter: {
     mode: string
     chats: string[]
@@ -149,13 +253,50 @@ export interface KnowledgeItem {
 }
 
 export interface PendingKnowledge {
+  id: number
   title: string
   content: string
+  category: string
   tags: string[]
   source_chat: string
   source_message_ids: string
   urgency: number
   batch_id: string
+}
+
+export interface PendingBatch {
+  task_id: string
+  summary: string | null
+  created_at: string
+  item_count: number
+}
+
+export interface KnowledgeBatch {
+  batch_id: string
+  item_count: number
+  created_at: string
+}
+
+export interface SyncHealth {
+  platforms: { platform: string; chats: number; last_sync: string | null; last_message_ts: string | null }[]
+  stale: { platform: string; chat_id: string; last_sync: string | null }[]
+}
+
+export interface AliasEntry {
+  id: number
+  platform: string
+  platform_id: string
+  platform_name: string | null
+}
+
+export interface AliasGroup {
+  canonical_name: string
+  entries: AliasEntry[]
+}
+
+export interface SemanticTrigger {
+  query: string
+  threshold: number
 }
 
 export interface TaskProgress {
@@ -197,6 +338,12 @@ export interface SchedulerStatus {
   tag_interval_minutes: number
   last_tag_at: string | null
   next_tag_at: string | null
+  tag_max_contacts: number
+  todo_remind_enabled: boolean
+  todo_remind_interval_minutes: number
+  todo_remind_min_urgency: number
+  last_todo_remind_at: string | null
+  next_todo_remind_at: string | null
 }
 
 export interface TelegramStatus {

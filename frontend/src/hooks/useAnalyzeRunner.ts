@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState } from "react"
-import { toast } from "sonner"
-import { fetchAPI, getErrorMessage, subscribeSSE, type PendingKnowledge, type TaskProgress } from "@/lib/api"
+import { useCallback, useState } from "react"
+import { fetchAPI, type PendingKnowledge } from "@/lib/api"
+import { useTaskRunner } from "@/hooks/useTaskRunner"
 
 /**
  * Shared logic for triggering an AI analysis run and surfacing the review
@@ -24,57 +24,32 @@ export interface AnalyzeRunOptions {
 }
 
 export function useAnalyzeRunner() {
-  const [running, setRunning] = useState(false)
+  const { run: runTask, running } = useTaskRunner()
   const [results, setResults] = useState<PendingKnowledge[] | null>(null)
   const [taskId, setTaskId] = useState("")
   const [summary, setSummary] = useState("")
-  const esRef = useRef<EventSource | null>(null)
 
-  const run = useCallback(async (opts: AnalyzeRunOptions = {}) => {
-    if (running) return
-    setRunning(true)
-    const toastId = toast.loading("AI 分析启动中...")
-    try {
-      const { task_id } = await fetchAPI<{ task_id: string }>("/analyze", {
-        method: "POST",
-        body: JSON.stringify(opts),
-      })
-      esRef.current?.close()
-      esRef.current = subscribeSSE<TaskProgress>(`/tasks/${task_id}/events`, async (data) => {
-        toast.loading(data.message || data.status, { id: toastId })
-        if (data.status === "done") {
-          esRef.current?.close()
-          try {
-            const r = await fetchAPI<PendingKnowledge[]>(`/analyze/${task_id}/results`)
-            setResults(r)
-            setTaskId(task_id)
-            setSummary(data.summary || "")
-          } catch { /* ignore — error toast already up */ }
-          toast.success(data.message || "完成", { id: toastId })
-          setRunning(false)
-        } else if (data.status === "error") {
-          esRef.current?.close()
-          toast.error(data.message || "失败", { id: toastId })
-          setRunning(false)
-        } else if (data.status === "cancelled") {
-          esRef.current?.close()
-          toast.info(data.message || "已取消", { id: toastId })
-          setRunning(false)
-        }
-      }, () => {
-        toast.dismiss(toastId)
-        setRunning(false)
-      })
-    } catch (e: unknown) {
-      toast.error(getErrorMessage(e), { id: toastId })
-      setRunning(false)
-    }
-  }, [running])
+  const run = useCallback((opts: AnalyzeRunOptions = {}) => runTask({
+    start: () => fetchAPI<{ task_id: string }>("/analyze", {
+      method: "POST",
+      body: JSON.stringify(opts),
+    }),
+    taskType: "analyze",
+    loadingText: "AI 分析启动中...",
+    onDone: async (task, id) => {
+      try {
+        const r = await fetchAPI<PendingKnowledge[]>(`/analyze/${id}/results`)
+        setResults(r)
+        setTaskId(id)
+        setSummary(task.summary || "")
+      } catch { /* ignore — error toast already up */ }
+    },
+  }), [runTask])
 
   const closeModal = useCallback(() => setResults(null), [])
 
   return {
-    running,
+    running: running.has("analyze"),
     run,
     modalProps: { results, taskId, summary, onClose: closeModal, onSaved: closeModal },
   }

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react"
+import { toast } from "sonner"
 import { fetchAPI, getErrorMessage, type PendingKnowledge } from "@/lib/api"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -15,26 +16,30 @@ interface Props {
 
 export function KnowledgeReviewModal({ taskId, results, summary, onClose, onSaved }: Props) {
   const [selected, setSelected] = useState<Set<number>>(
-    () => new Set(results.map((_, i) => i))
+    () => new Set(results.map(r => r.id))
   )
   const [error, setError] = useState("")
   const [saving, setSaving] = useState(false)
 
-  const toggle = (i: number) =>
+  const toggle = (id: number) =>
     setSelected(prev => {
       const next = new Set(prev)
-      if (next.has(i)) next.delete(i)
-      else next.add(i)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
     })
 
   const save = async () => {
     setSaving(true)
     try {
-      await fetchAPI(`/analyze/${taskId}/confirm`, {
-        method: "POST",
-        body: JSON.stringify({ ids: Array.from(selected) }),
-      })
+      const res = await fetchAPI<{ saved: number; skipped: number; duplicates: number }>(
+        `/analyze/${taskId}/confirm`,
+        {
+          method: "POST",
+          body: JSON.stringify({ ids: Array.from(selected) }),
+        },
+      )
+      toast.success(res.duplicates > 0 ? `已保存 ${res.saved} 条（去重跳过 ${res.duplicates} 条）` : `已保存 ${res.saved} 条`)
       onSaved()
     } catch (e: unknown) {
       setError(getErrorMessage(e))
@@ -71,16 +76,21 @@ export function KnowledgeReviewModal({ taskId, results, summary, onClose, onSave
               {summary}
             </div>
           )}
-          {results.map((item, i) => {
-            const checked = selected.has(i)
+          {results.map(item => {
+            const checked = selected.has(item.id)
             return (
               <div
-                key={i}
-                onClick={() => toggle(i)}
+                key={item.id}
+                onClick={() => toggle(item.id)}
                 role="checkbox"
                 aria-checked={checked}
                 tabIndex={0}
-                onKeyDown={e => e.key === "Enter" && toggle(i)}
+                onKeyDown={e => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    toggle(item.id)
+                  }
+                }}
                 className={`rounded-lg p-4 cursor-pointer transition-colors ${checked ? "bg-secondary border border-ring" : "border border-border opacity-50"}`}
               >
                 <div className="flex items-start gap-3">

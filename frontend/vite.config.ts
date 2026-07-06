@@ -20,7 +20,6 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes('node_modules/recharts')) return 'recharts'
           if (id.match(/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler)\//)) return 'react'
         },
       },
