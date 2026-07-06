@@ -155,7 +155,56 @@ CREATE TABLE IF NOT EXISTS contact_tag_links (
 
 CREATE INDEX IF NOT EXISTS idx_tag_links_contact ON contact_tag_links(platform, chat_id);
 CREATE INDEX IF NOT EXISTS idx_tag_links_status ON contact_tag_links(status);
+
+-- Analyze checkpoint, mirroring sync_state: advances whenever messages are
+-- PROCESSED (even if zero items came out), decoupled from what the user saves.
+CREATE TABLE IF NOT EXISTS analysis_state (
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    last_analyzed_ts DATETIME,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (platform, chat_id)
+);
+
+-- One row per analyze run; extracted items wait in pending_items until the
+-- user reviews them. Both survive restarts (the old in-memory pending store
+-- lost scheduled runs' output after 1h).
+CREATE TABLE IF NOT EXISTS analysis_batches (
+    task_id TEXT PRIMARY KEY,
+    summary TEXT,
+    status TEXT DEFAULT 'pending',   -- 'pending' | 'confirmed' | 'discarded'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pending_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    category TEXT,
+    urgency INTEGER DEFAULT 3,
+    tags TEXT,
+    source_chat TEXT,
+    source_message_ids TEXT,
+    batch_id TEXT,
+    status TEXT DEFAULT 'pending',   -- 'pending' | 'saved' | 'rejected'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_task ON pending_items(task_id, status);
+
+-- Scheduler run stamps. Config keeps the enabled/interval settings; run STATE
+-- lives here so the scheduler loop never rewrites config.json.
+CREATE TABLE IF NOT EXISTS scheduler_state (
+    job TEXT PRIMARY KEY,
+    last_run_at TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 """
+
+# Set by init_db(). False when the SQLite build lacks FTS5 — search and
+# trigger scans then fall back to LIKE.
+FTS_ENABLED = False
 
 
 async def get_db() -> aiosqlite.Connection:
@@ -207,7 +256,45 @@ async def init_db() -> None:
         await db.execute("PRAGMA synchronous=NORMAL")
         await db.executescript(SCHEMA_SQL)
         await _migrate_db(db)
+        await _init_fts(db)
         await db.commit()
+
+
+async def _init_fts(db: aiosqlite.Connection) -> None:
+    """External-content FTS5 index over messages.content, trigram-tokenized so
+    CJK substring queries (>= 3 chars) work. Kept in sync by triggers; rebuilt
+    when row counts diverge (first run, or writes made while FTS was broken)."""
+    global FTS_ENABLED
+    try:
+        await db.execute(
+            """CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                   content, content='messages', content_rowid='id', tokenize='trigram')"""
+        )
+        await db.execute(
+            """CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+                   INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+               END"""
+        )
+        await db.execute(
+            """CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+                   INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+               END"""
+        )
+        await db.execute(
+            """CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages BEGIN
+                   INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+                   INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+               END"""
+        )
+        msg_count = (await db.execute_fetchall("SELECT COUNT(*) FROM messages"))[0][0]
+        fts_count = (await db.execute_fetchall("SELECT COUNT(*) FROM messages_fts"))[0][0]
+        if msg_count != fts_count:
+            await db.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        FTS_ENABLED = True
+    except Exception as e:  # SQLite built without FTS5/trigram
+        FTS_ENABLED = False
+        import logging
+        logging.getLogger("app.database").warning("FTS5 unavailable, falling back to LIKE: %s", e)
 
 
 async def _migrate_db(db: aiosqlite.Connection) -> None:
@@ -256,6 +343,14 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
     if "embedding_model" not in {row[1] for row in knowledge_columns}:
         # Track which model produced the vector — re-embed on model change.
         await db.execute("ALTER TABLE knowledge_items ADD COLUMN embedding_model TEXT")
+
+    # Unreviewed batches older than 30 days are stale; drop them so scheduled
+    # runs nobody reviews don't grow the table unbounded.
+    await db.execute(
+        """DELETE FROM pending_items WHERE task_id IN
+           (SELECT task_id FROM analysis_batches WHERE created_at < datetime('now', '-30 days'))"""
+    )
+    await db.execute("DELETE FROM analysis_batches WHERE created_at < datetime('now', '-30 days')")
 
 
 async def _normalize_existing_timestamps(db: aiosqlite.Connection, table: str, column: str) -> None:

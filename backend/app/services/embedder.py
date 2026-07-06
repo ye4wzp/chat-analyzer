@@ -1,69 +1,94 @@
-"""Embedding indexer for knowledge_items.
+"""Embedding index for knowledge_items.
 
-Stores float32 vectors as BLOB columns in `knowledge_items.embedding`. Pure
-Python — no numpy. For our scale (≤ a few thousand knowledge items) the
-serialization + cosine is microseconds and the disk cost is ~3KB per item at
-768 dims.
-
-Design notes:
-- Uses the configured OpenAI-compatible /v1/embeddings endpoint with
-  `cfg.llm.embedding_model`. If not configured, embed_all() raises.
-- Normalizes inputs by stripping; treats title + content as the embedding
-  payload so search queries that match titles AND deeper content both surface.
-- Re-embeds when `embedding_model` changes (column tracks which model produced
-  the row's vector).
+Vectors are L2-normalized float32 BLOBs. Ranking loads candidate BLOBs into a
+numpy matrix and dots against the query — legacy unnormalized rows are
+re-normalized at read time so scores stay correct either way. Every embedding
+HTTP call is budget-reserved and recorded to llm_usage (purpose='embed').
 """
-from __future__ import annotations
-
 import logging
-import struct
 from typing import Awaitable, Callable
 
 import aiosqlite
 import httpx
+import numpy as np
 
 from app.core.config import load_config
 from app.core.database import DB_PATH
+from app.services import budget
 
 logger = logging.getLogger("app.embedder")
 
 ProgressCB = Callable[[int, str], Awaitable[None] | None]
 
+SEMANTIC_DUP_THRESHOLD = 0.92
+
 
 def serialize_vec(vec: list[float]) -> bytes:
-    """Pack a float vector as little-endian float32 bytes for BLOB storage."""
-    return struct.pack(f"<{len(vec)}f", *vec)
+    arr = np.asarray(vec, dtype=np.float32)
+    norm = float(np.linalg.norm(arr))
+    if norm > 0:
+        arr = arr / norm
+    return arr.tobytes()
 
 
 def deserialize_vec(blob: bytes) -> list[float]:
-    n = len(blob) // 4
-    return list(struct.unpack(f"<{n}f", blob))
+    return np.frombuffer(blob, dtype=np.float32).tolist()
 
 
 def cosine(a: list[float], b: list[float]) -> float:
     """Plain cosine similarity. Returns 0 for zero-vectors instead of NaN."""
-    if len(a) != len(b):
+    va = np.asarray(a, dtype=np.float32)
+    vb = np.asarray(b, dtype=np.float32)
+    if va.shape != vb.shape:
         return 0.0
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for x, y in zip(a, b):
-        dot += x * y
-        na += x * x
-        nb += y * y
+    na = float(np.linalg.norm(va))
+    nb = float(np.linalg.norm(vb))
     if na == 0 or nb == 0:
         return 0.0
-    return dot / (na ** 0.5 * nb ** 0.5)
+    return float(va @ vb) / (na * nb)
 
 
-async def embed_text(text: str, model: str | None = None) -> list[float] | None:
+def rank_by_similarity(query_vec: list[float], blobs: list[bytes], top_k: int) -> list[tuple[int, float]]:
+    """Rank stored vectors against a query. Returns [(blob_index, score)] for
+    the top_k most similar, descending."""
+    q = np.asarray(query_vec, dtype=np.float32)
+    qn = float(np.linalg.norm(q))
+    if qn == 0:
+        return []
+    q = q / qn
+
+    idx_map: list[int] = []
+    rows: list[np.ndarray] = []
+    for i, blob in enumerate(blobs):
+        v = np.frombuffer(blob, dtype=np.float32)
+        if v.shape == q.shape:
+            idx_map.append(i)
+            rows.append(v)
+    if not rows:
+        return []
+
+    matrix = np.vstack(rows)
+    norms = np.linalg.norm(matrix, axis=1)
+    norms[norms == 0] = 1.0
+    scores = (matrix @ q) / norms
+    order = np.argsort(-scores)[:top_k]
+    return [(idx_map[int(i)], float(scores[int(i)])) for i in order]
+
+
+async def embed_text(text: str, model: str | None = None, task_id: str | None = None) -> list[float] | None:
     """One-off embed of a single string. Used by semantic search at query time."""
     cfg = load_config().llm
     model = model or cfg.embedding_model
     if not model:
         return None
-    api_url = cfg.api_url.replace("localhost", "127.0.0.1")
+    estimate = len(text) // 3
     try:
+        await budget.reserve(estimate)
+    except budget.TokenBudgetExceeded as e:
+        logger.warning("embed skipped: %s", e)
+        return None
+    try:
+        api_url = cfg.api_url.replace("localhost", "127.0.0.1")
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 f"{api_url}/embeddings",
@@ -74,17 +99,29 @@ async def embed_text(text: str, model: str | None = None) -> list[float] | None:
                 logger.warning("embed %s failed: %s %s", model, resp.status_code, resp.text[:200])
                 return None
             data = resp.json()
+            usage = data.get("usage") or {}
+            await budget.record(
+                "embedding", model, int(usage.get("prompt_tokens") or estimate), 0, "embed", task_id,
+            )
             return data["data"][0]["embedding"]
     except Exception as e:
         logger.warning("embed call exception: %s", e)
         return None
+    finally:
+        budget.release(estimate)
 
 
-async def embed_batch(texts: list[str], model: str) -> list[list[float] | None]:
+async def embed_batch(texts: list[str], model: str, task_id: str | None = None) -> list[list[float] | None]:
     """Embed a batch in one HTTP call where the backend supports it. Falls back
-    to per-text on failure so one bad row doesn't kill a 500-item run."""
+    to per-text calls on failure so one bad row doesn't kill a 500-item run."""
     cfg = load_config().llm
     api_url = cfg.api_url.replace("localhost", "127.0.0.1")
+    estimate = sum(len(t) for t in texts) // 3
+    try:
+        await budget.reserve(estimate)
+    except budget.TokenBudgetExceeded as e:
+        logger.warning("batch embed skipped: %s", e)
+        return [None] * len(texts)
     try:
         async with httpx.AsyncClient(timeout=300) as client:
             resp = await client.post(
@@ -94,22 +131,31 @@ async def embed_batch(texts: list[str], model: str) -> list[list[float] | None]:
             )
             if resp.status_code != 200:
                 logger.warning("batch embed %s failed: %s %s", model, resp.status_code, resp.text[:200])
-                return [None] * len(texts)
+                return await _embed_each(texts, model, task_id)
             data = resp.json()
             # Server may return entries out of order; sort by `index` to be safe.
             entries = sorted(data.get("data", []), key=lambda e: e.get("index", 0))
             vecs = [e["embedding"] for e in entries]
             if len(vecs) != len(texts):
                 logger.warning("batch embed length mismatch: in=%d out=%d", len(texts), len(vecs))
-                # Pad/truncate so caller's index alignment doesn't break.
-                vecs = (vecs + [None] * len(texts))[: len(texts)]
+                return await _embed_each(texts, model, task_id)
+            usage = data.get("usage") or {}
+            await budget.record(
+                "embedding", model, int(usage.get("prompt_tokens") or estimate), 0, "embed", task_id,
+            )
             return vecs
     except Exception as e:
         logger.warning("batch embed exception: %s", e)
-        return [None] * len(texts)
+        return await _embed_each(texts, model, task_id)
+    finally:
+        budget.release(estimate)
 
 
-async def embed_all_knowledge(progress: ProgressCB | None = None) -> dict:
+async def _embed_each(texts: list[str], model: str, task_id: str | None) -> list[list[float] | None]:
+    return [await embed_text(t, model, task_id) for t in texts]
+
+
+async def embed_all_knowledge(progress: ProgressCB | None = None, task_id: str | None = None) -> dict:
     """Embed every knowledge_item that's missing a vector or whose stored
     embedding came from a different model. Returns counts."""
     cfg = load_config().llm
@@ -138,7 +184,7 @@ async def embed_all_knowledge(progress: ProgressCB | None = None) -> dict:
     total = len(pending)
     if not total:
         await _emit(100, "已是最新")
-        return {"embedded": 0, "skipped": 0, "total": 0}
+        return {"embedded": 0, "failed": 0, "total": 0}
 
     # 16 per request — large enough to amortize HTTP, small enough to keep
     # per-batch latency under 30s on local CPU embed models.
@@ -153,7 +199,7 @@ async def embed_all_knowledge(progress: ProgressCB | None = None) -> dict:
             5 + int(90 * i / total),
             f"embed {i+1}-{min(i+BATCH, total)}/{total}...",
         )
-        vecs = await embed_batch(texts, model)
+        vecs = await embed_batch(texts, model, task_id)
         async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
             for row, vec in zip(batch, vecs):
                 if vec is None:
@@ -167,4 +213,45 @@ async def embed_all_knowledge(progress: ProgressCB | None = None) -> dict:
             await db.commit()
 
     await _emit(100, f"已 embed {embedded} 条" + (f"，{failed} 条失败" if failed else ""))
-    return {"embedded": embedded, "skipped": failed, "total": total}
+    return {"embedded": embedded, "failed": failed, "total": total}
+
+
+async def find_semantic_duplicates(items: list[dict], task_id: str | None = None) -> set[int]:
+    """Indices of `items` that near-duplicate stored knowledge or an earlier
+    item in the same batch (cosine >= SEMANTIC_DUP_THRESHOLD). Empty set when
+    no embedding model is configured or embedding fails — dedup then falls back
+    to the exact matching in save_knowledge_items."""
+    cfg = load_config().llm
+    model = cfg.embedding_model
+    if not model or not items:
+        return set()
+
+    vecs = await embed_batch([f"{it.get('title', '')}\n{it.get('content', '')}" for it in items], model, task_id)
+
+    async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
+        rows = await db.execute_fetchall(
+            "SELECT embedding FROM knowledge_items WHERE embedding IS NOT NULL AND embedding_model = ?",
+            (model,),
+        )
+    existing = [row[0] for row in rows]
+
+    duplicates: set[int] = set()
+    kept: list[np.ndarray] = []
+    for i, vec in enumerate(vecs):
+        if vec is None:
+            continue
+        q = np.asarray(vec, dtype=np.float32)
+        qn = float(np.linalg.norm(q))
+        if qn == 0:
+            continue
+        q = q / qn
+        if existing:
+            top = rank_by_similarity(vec, existing, 1)
+            if top and top[0][1] >= SEMANTIC_DUP_THRESHOLD:
+                duplicates.add(i)
+                continue
+        if any(float(q @ k) >= SEMANTIC_DUP_THRESHOLD for k in kept):
+            duplicates.add(i)
+            continue
+        kept.append(q)
+    return duplicates

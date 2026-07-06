@@ -1,13 +1,12 @@
-"""In-memory task tracking shared across API routers and scheduler."""
+"""In-memory task PROGRESS tracking shared across API routers and scheduler.
+Analysis results live in the analysis_batches/pending_items tables — only
+transient progress state belongs here."""
 import asyncio
 import time
 import uuid
 
 # task_id -> {type, status, progress, message, _finished_at?, ...}
 _tasks: dict[str, dict] = {}
-
-# task_id -> analysis results pending review
-_pending_results: dict[str, list[dict]] = {}
 
 # task_id -> asyncio.Task handle, used by /tasks/{id}/cancel
 _task_handles: dict[str, asyncio.Task] = {}
@@ -31,7 +30,6 @@ def _prune() -> None:
                 drop.append(tid)
     for tid in drop:
         _tasks.pop(tid, None)
-        _pending_results.pop(tid, None)
 
     # Hard cap: if still over MAX, drop oldest finished first.
     if len(_tasks) > TASK_MAX_ENTRIES:
@@ -41,7 +39,6 @@ def _prune() -> None:
         )
         for tid in finished[: len(_tasks) - TASK_MAX_ENTRIES]:
             _tasks.pop(tid, None)
-            _pending_results.pop(tid, None)
 
 
 def list_tasks() -> list[dict]:

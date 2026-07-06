@@ -1,18 +1,58 @@
 import asyncio
 import json
 
+import aiosqlite
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.core import database
 from app.core.tasks import _tasks, cancel_task, list_tasks as _list_tasks
 
 router = APIRouter()
 
+EVENTS_HEARTBEAT_TICKS = 25  # 1s poll interval → keepalive comment every ~25s
+
 
 @router.get("/api/tasks")
 async def list_tasks():
-    """All in-memory tasks. Used by the global task bar in the UI."""
+    """All in-memory tasks. Kept as a fallback for clients without SSE."""
     return _list_tasks()
+
+
+@router.get("/api/events")
+async def global_events():
+    """One multiplexed SSE channel for the whole UI: task list + inbox unread
+    count, pushed only when they change. Replaces the frontend's fixed-interval
+    polling of /tasks and /inbox/unread_count."""
+    async def snapshot() -> str:
+        tasks = _list_tasks()
+        try:
+            async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
+                rows = await db.execute_fetchall(
+                    "SELECT COUNT(*) FROM keyword_triggers WHERE read = 0"
+                )
+            unread = int(rows[0][0]) if rows else 0
+        except Exception:
+            unread = 0
+        return json.dumps({"tasks": tasks, "unread": unread}, ensure_ascii=False)
+
+    async def event_stream():
+        last_payload = None
+        idle_ticks = 0
+        while True:
+            payload = await snapshot()
+            if payload != last_payload:
+                yield f"data: {payload}\n\n"
+                last_payload = payload
+                idle_ticks = 0
+            else:
+                idle_ticks += 1
+                if idle_ticks >= EVENTS_HEARTBEAT_TICKS:
+                    yield ": ping\n\n"
+                    idle_ticks = 0
+            await asyncio.sleep(1)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/api/tasks/{task_id}/cancel")
@@ -28,6 +68,9 @@ async def cancel(task_id: str):
 
 @router.get("/api/tasks/{task_id}/events")
 async def task_events(task_id: str):
+    if task_id not in _tasks:
+        raise HTTPException(404, "任务不存在")
+
     async def event_stream():
         while True:
             if task_id in _tasks:
@@ -35,6 +78,8 @@ async def task_events(task_id: str):
                 yield f"data: {json.dumps(public)}\n\n"
                 if _tasks[task_id]["status"] in ("done", "error", "cancelled"):
                     break
+            else:
+                break
             await asyncio.sleep(0.5)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

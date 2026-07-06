@@ -1,12 +1,38 @@
 from pathlib import Path
 
+import aiosqlite
 from fastapi import APIRouter, HTTPException
 
+from app.core import database
 from app.core.runners import run_import, run_qq_sync, run_sync, run_telegram_sync
 from app.core.tasks import create_task, is_task_running, spawn_cancellable
 from app.models.sync import ImportRequest, SyncRequest
 
 router = APIRouter()
+
+
+@router.get("/api/sync/health")
+async def sync_health(stale_days: int = 7):
+    """Per-platform sync freshness plus the chats that haven't synced in a
+    while. Powers the sidebar's real data status (previously hardcoded)."""
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
+        db.row_factory = aiosqlite.Row
+        platforms = await db.execute_fetchall(
+            """SELECT s.platform,
+                      COUNT(*) AS chats,
+                      STRFTIME('%Y-%m-%dT%H:%M:%SZ', MAX(s.updated_at)) AS last_sync,
+                      (SELECT MAX(timestamp) FROM messages m WHERE m.platform = s.platform) AS last_message_ts
+               FROM sync_state s GROUP BY s.platform"""
+        )
+        stale = await db.execute_fetchall(
+            """SELECT platform, chat_id,
+                      STRFTIME('%Y-%m-%dT%H:%M:%SZ', updated_at) AS last_sync
+               FROM sync_state
+               WHERE updated_at < datetime('now', ?)
+               ORDER BY updated_at LIMIT 20""",
+            (f"-{int(stale_days)} days",),
+        )
+    return {"platforms": [dict(r) for r in platforms], "stale": [dict(r) for r in stale]}
 
 
 @router.post("/api/sync/wechat")
@@ -92,10 +118,14 @@ async def _run_sync_all(task_id: str, new_only: bool):
         except Exception:
             pass
 
+    # Partial success is still success — 2/3 platforms landing data shouldn't
+    # render as a failed task. Only all-failed is an error.
     _tasks[task_id].update(
-        status="error" if failures else "done",
+        status="done" if successes else "error",
         progress=100,
-        message=("全量同步部分失败: " if failures else "全量同步完成: ") + " | ".join(results),
+        message=("全量同步完成（部分失败）: " if failures and successes
+                 else "全量同步失败: " if failures
+                 else "全量同步完成: ") + " | ".join(results),
     )
 
 

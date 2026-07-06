@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from app.core import database
-from app.core.runners import run_embed_knowledge
+from app.core.runners import run_embed_knowledge, spawn_embed_if_needed
 from app.core.tasks import create_task, is_task_running, spawn_cancellable
 from app.models.knowledge import KnowledgeUpdateRequest
 
@@ -48,6 +48,34 @@ async def embed_status():
     return {"model": model, "total": total, "indexed": indexed, "stale": stale}
 
 
+@router.get("/api/knowledge/batches")
+async def list_batches(limit: int = 20):
+    """Recent save batches, for batch-level undo."""
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await db.execute_fetchall(
+            """SELECT batch_id, COUNT(*) AS item_count, MIN(created_at) AS created_at
+               FROM knowledge_items WHERE batch_id <> ''
+               GROUP BY batch_id ORDER BY created_at DESC LIMIT ?""",
+            (limit,),
+        )
+    return [dict(r) for r in rows]
+
+
+@router.delete("/api/knowledge/batch/{batch_id}")
+async def delete_batch(batch_id: str):
+    """Undo one confirmed batch: removes its knowledge items and the derived
+    per-message analysis rows."""
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
+        await db.execute("PRAGMA busy_timeout=30000")
+        cur = await db.execute("DELETE FROM knowledge_items WHERE batch_id=?", (batch_id,))
+        await db.execute("DELETE FROM analysis_results WHERE batch_id=?", (batch_id,))
+        await db.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(404, "批次不存在")
+    return {"deleted": cur.rowcount}
+
+
 @router.post("/api/knowledge/{item_id}/extend")
 async def extend_knowledge(item_id: int):
     from app.services.analyzer import AnalyzerService
@@ -72,41 +100,50 @@ async def extend_knowledge(item_id: int):
     return {"extended_content": extended}
 
 
+async def _fetch_items_by_ids(db, ids: list[int]) -> dict[int, dict]:
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    rows = await db.execute_fetchall(
+        f"""SELECT id, title, content, source_chat, source_message_ids,
+                   tags, extended_content, batch_id, created_at
+            FROM knowledge_items WHERE id IN ({placeholders})""",
+        ids,
+    )
+    return {r["id"]: dict(r) for r in rows}
+
+
 @router.get("/api/knowledge/{item_id}/related")
 async def related_items(item_id: int, limit: int = 3):
     """Top-K similar knowledge_items by embedding cosine. Returns [] if the
     target itself isn't embedded yet (UI shows nothing rather than misleading
     keyword fallback)."""
-    from app.services.embedder import deserialize_vec, cosine
+    from app.services.embedder import deserialize_vec, rank_by_similarity
 
     async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         target_rows = await db.execute_fetchall(
-            "SELECT * FROM knowledge_items WHERE id=?", (item_id,)
+            "SELECT embedding FROM knowledge_items WHERE id=?", (item_id,)
         )
         if not target_rows:
             raise HTTPException(404, "知识点不存在")
-        target = dict(target_rows[0])
-        if not target.get("embedding"):
+        blob = target_rows[0]["embedding"]
+        if not blob:
             return []
 
-        target_vec = deserialize_vec(target["embedding"])
-        rows = await db.execute_fetchall(
-            "SELECT * FROM knowledge_items WHERE id <> ? AND embedding IS NOT NULL",
+        candidates = await db.execute_fetchall(
+            "SELECT id, embedding FROM knowledge_items WHERE id <> ? AND embedding IS NOT NULL",
             (item_id,),
         )
+        ranked = rank_by_similarity(deserialize_vec(blob), [r["embedding"] for r in candidates], limit)
+        by_id = await _fetch_items_by_ids(db, [candidates[i]["id"] for i, _ in ranked])
 
-    scored = []
-    for r in rows:
-        d = dict(r)
-        vec = deserialize_vec(d["embedding"])
-        scored.append((cosine(target_vec, vec), d))
-    scored.sort(key=lambda x: x[0], reverse=True)
     out = []
-    for score, item in scored[:limit]:
-        item.pop("embedding", None)
-        item["similarity"] = round(score, 4)
-        out.append(item)
+    for i, score in ranked:
+        item = by_id.get(candidates[i]["id"])
+        if item:
+            item["similarity"] = round(score, 4)
+            out.append(item)
     return out
 
 
@@ -128,24 +165,22 @@ async def list_knowledge(
         db.row_factory = aiosqlite.Row
 
         if q and mode == "semantic":
-            from app.services.embedder import embed_text, deserialize_vec, cosine
+            from app.services.embedder import embed_text, rank_by_similarity
             query_vec = await embed_text(q)
             if not query_vec:
                 return []
-            rows = await db.execute_fetchall(
-                "SELECT * FROM knowledge_items WHERE embedding IS NOT NULL"
+            candidates = await db.execute_fetchall(
+                "SELECT id, embedding FROM knowledge_items WHERE embedding IS NOT NULL"
             )
-            scored = []
-            for r in rows:
-                vec = deserialize_vec(r["embedding"])
-                scored.append((cosine(query_vec, vec), dict(r)))
-            scored.sort(key=lambda x: x[0], reverse=True)
+            ranked = rank_by_similarity(query_vec, [r["embedding"] for r in candidates], offset + limit)
+            page = ranked[offset : offset + limit]
+            by_id = await _fetch_items_by_ids(db, [candidates[i]["id"] for i, _ in page])
             results = []
-            for score, item in scored[offset : offset + limit]:
-                # Drop the BLOB so we don't ship 3KB×N over the wire; surface score for UI sort indicator.
-                item.pop("embedding", None)
-                item["similarity"] = round(score, 4)
-                results.append(item)
+            for i, score in page:
+                item = by_id.get(candidates[i]["id"])
+                if item:
+                    item["similarity"] = round(score, 4)
+                    results.append(item)
             return results
 
         if q:
@@ -186,10 +221,20 @@ async def update_knowledge(item_id: int, body: KnowledgeUpdateRequest):
         updates["tags"] = json.dumps(body.tags, ensure_ascii=False)
     if not updates:
         raise HTTPException(400, "No fields to update")
+
+    # Edited text invalidates the stored vector; re-embed in the background so
+    # semantic search never serves a stale index for this item.
+    reembed = "title" in updates or "content" in updates
+    if reembed:
+        updates["embedding"] = None
+        updates["embedding_model"] = None
+
     set_clause = ", ".join(f"{k}=?" for k in updates)
     async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         await db.execute(f"UPDATE knowledge_items SET {set_clause} WHERE id=?", [*updates.values(), item_id])
         await db.commit()
+    if reembed:
+        spawn_embed_if_needed()
     return {"ok": True}
 
 

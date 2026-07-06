@@ -62,6 +62,11 @@ class SchedulerConfig(BaseModel):
     telegram_interval_minutes: int = 60
     tag_enabled: bool = False
     tag_interval_minutes: int = 360
+    tag_max_contacts: int = 50  # per scheduled run; a fresh DB shouldn't burn hundreds of LLM calls at once
+    todo_remind_enabled: bool = False
+    todo_remind_interval_minutes: int = 1440
+    todo_remind_min_urgency: int = 4
+    # Legacy run stamps (pre scheduler_state table). Read once for migration; never written anymore.
     last_sync_at: str | None = None
     last_analyze_at: str | None = None
     last_qq_sync_at: str | None = None
@@ -69,17 +74,29 @@ class SchedulerConfig(BaseModel):
     last_tag_at: str | None = None
 
 
+class SemanticTrigger(BaseModel):
+    """Embedding-based inbox trigger: new messages whose vector is closer than
+    `threshold` to `query` land in the inbox, keyword-free."""
+    query: str
+    threshold: float = 0.6
+
+
 class Config(BaseModel):
     daily_token_budget: int = 200_000
     budget_action: str = "pause_and_notify"
+    api_token: str = ""  # when set, /api/* requires X-API-Token (or ?token= for SSE)
     vip_contacts: list[str] = []
-    keywords: list[str] = []  # case-sensitive substring matches; new keywords backfill on next scan
+    keywords: list[str] = []  # case-insensitive (ASCII) substring matches; new keywords backfill on next scan
+    semantic_triggers: list[SemanticTrigger] = []
     chat_filter: ChatFilterConfig = ChatFilterConfig()
     pre_filter: PreFilterConfig = PreFilterConfig()
     llm: LLMConfig = LLMConfig()
     qq: QQConfig = QQConfig()
     telegram: TelegramConfig = TelegramConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
+
+
+_api_token_cache: str | None = None
 
 
 def load_config() -> Config:
@@ -89,13 +106,23 @@ def load_config() -> Config:
 
 
 def save_config(cfg: Config) -> None:
+    global _api_token_cache
     BASE_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(cfg.model_dump_json(indent=2))
+    _api_token_cache = cfg.api_token
     # Config holds api_key / token / session_string equivalent to account credentials.
     try:
         os.chmod(CONFIG_PATH, 0o600)
     except OSError:
         pass
+
+
+def get_api_token() -> str:
+    """Cached token for the request middleware — avoids a disk read per request."""
+    global _api_token_cache
+    if _api_token_cache is None:
+        _api_token_cache = load_config().api_token
+    return _api_token_cache
 
 
 def ensure_dirs() -> None:

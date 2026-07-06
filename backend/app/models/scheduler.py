@@ -14,3 +14,7 @@ class SchedulerUpdate(BaseModel):
     telegram_interval_minutes: Optional[int] = None
     tag_enabled: Optional[bool] = None
     tag_interval_minutes: Optional[int] = None
+    tag_max_contacts: Optional[int] = None
+    todo_remind_enabled: Optional[bool] = None
+    todo_remind_interval_minutes: Optional[int] = None
+    todo_remind_min_urgency: Optional[int] = None

@@ -10,6 +10,8 @@ router = APIRouter()
 
 
 def _redact(data: dict) -> dict:
+    if data.get("api_token"):
+        data["api_token"] = "********"
     if data.get("llm", {}).get("api_key"):
         data["llm"]["api_key"] = "********"
     if data.get("qq", {}).get("token"):
@@ -76,6 +78,10 @@ async def update_config(body: ConfigUpdate):
         cfg.keywords.remove(body.remove_keyword)
     if body.keywords is not None:
         cfg.keywords = body.keywords
+    if body.semantic_triggers is not None:
+        cfg.semantic_triggers = body.semantic_triggers
+    if body.api_token is not None and body.api_token != "********":
+        cfg.api_token = body.api_token
 
     save_config(cfg)
     return _redact(cfg.model_dump())

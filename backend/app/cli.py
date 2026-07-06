@@ -224,7 +224,9 @@ def analyze(chat: str | None, since: str | None, until: str | None, limit: int):
             return
 
         try:
-            knowledge_items, summary = await svc.analyze_messages(messages)
+            knowledge_items, summary, completed = await svc.analyze_messages(messages)
+            if not completed:
+                console.print("[yellow]⚠ 今日 token 预算用尽，分析未完成[/yellow]")
         except TokenBudgetExceeded as e:
             console.print(f"[red]✗ {e}[/red]")
             return

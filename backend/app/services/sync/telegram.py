@@ -35,6 +35,25 @@ async def import_telegram_json(file_path: str) -> dict:
     return await _import_full_export(chat_list)
 
 
+def _canonical_chat_id(raw_id: object, tg_type: str, chat_name: str) -> str:
+    """Match Telethon's dialog.id convention (Bot API peer ids) so file imports
+    and live sync agree on chat identity: users/bots positive, basic groups
+    negated, channels/supergroups -100-prefixed. Without this the same chat
+    imported both ways becomes two chat_ids and dedup never fires."""
+    try:
+        n = int(raw_id)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return str(raw_id) if raw_id is not None else f"tg_{chat_name}"
+    if n < 0:
+        return str(n)
+    t = (tg_type or "").lower()
+    if "supergroup" in t or "channel" in t:
+        return str(-(10**12) - n)
+    if "group" in t:
+        return str(-n)
+    return str(n)
+
+
 async def _import_full_export(chat_list: list[dict]) -> dict:
     total_imported = 0
     total_raw = 0
@@ -42,11 +61,12 @@ async def _import_full_export(chat_list: list[dict]) -> dict:
     async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
         for chat in chat_list:
             chat_name = chat.get("name", "")
-            chat_id = str(chat.get("id", f"tg_{chat_name}"))
+            chat_id = _canonical_chat_id(chat.get("id"), chat.get("type", ""), chat_name)
             chat_type = _map_chat_type(chat.get("type", ""))
             messages = chat.get("messages", [])
             total_raw += len(messages)
 
+            last_ts = None
             for msg in messages:
                 if msg.get("type") == "service":
                     continue
@@ -83,12 +103,14 @@ async def _import_full_export(chat_list: list[dict]) -> dict:
                     ),
                 )
                 total_imported += max(cursor.rowcount, 0)
+                if last_ts is None or ts > last_ts:
+                    last_ts = ts
 
-            if messages:
+            if last_ts:
                 await db.execute(
                     """INSERT OR REPLACE INTO sync_state (platform, chat_id, last_timestamp, updated_at)
                        VALUES ('telegram', ?, ?, CURRENT_TIMESTAMP)""",
-                    (chat_id, messages[-1].get("date")),
+                    (chat_id, last_ts),
                 )
 
         await db.commit()

@@ -30,15 +30,17 @@ async def dashboard():
                FROM knowledge_items ORDER BY created_at DESC LIMIT 10"""
         )
 
+        # Message timestamps are local-naive; compare against local now, not
+        # UTC, or the 7/30-day boundaries drift by the tz offset.
         daily = await db.execute_fetchall(
             """SELECT substr(timestamp, 1, 10) as date, platform, COUNT(*) as count
                FROM messages
-               WHERE timestamp >= datetime('now', '-30 days')
+               WHERE timestamp >= datetime('now', 'localtime', '-30 days')
                GROUP BY date, platform
                ORDER BY date"""
         )
         recent_active_row = await db.execute_fetchall(
-            "SELECT COUNT(*) as c FROM messages WHERE timestamp >= datetime('now', '-7 days')"
+            "SELECT COUNT(*) as c FROM messages WHERE timestamp >= datetime('now', 'localtime', '-7 days')"
         )
 
     return {

@@ -5,7 +5,6 @@ import sys
 import uuid
 from datetime import datetime, timezone
 
-import aiosqlite
 import httpx
 
 # Route analyzer logs through stderr at INFO so they show up under uvicorn's
@@ -24,36 +23,15 @@ if not logger.handlers:
 _LOCAL_TZ = datetime.now().astimezone().tzinfo or timezone.utc
 
 from app.core.config import load_config
-from app.core.database import DB_PATH
+from app.services import budget
+from app.services.budget import TokenBudgetExceeded  # noqa: F401  (re-export)
 from app.services.pre_filter import filter_messages
 
 WINDOW_GAP_SECONDS = 1800  # 30 min
 MAX_WINDOW_SIZE = 40
 OVERLAP_SIZE = 5
 MAX_MSG_CONTENT_CHARS = 300  # cap per-message content so one long forward doesn't blow the prompt
-
-
-async def _record_usage(
-    provider: str,
-    model: str,
-    prompt_tokens: int,
-    completion_tokens: int,
-    purpose: str,
-    task_id: str | None = None,
-) -> None:
-    """Best-effort write to llm_usage table. Failures are swallowed so a bad
-    write never aborts an analyze run."""
-    try:
-        async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
-            await db.execute("PRAGMA busy_timeout=30000")
-            await db.execute(
-                "INSERT INTO llm_usage (provider, model, prompt_tokens, completion_tokens, purpose, task_id)"
-                " VALUES (?,?,?,?,?,?)",
-                (provider, model, int(prompt_tokens), int(completion_tokens), purpose, task_id),
-            )
-            await db.commit()
-    except Exception as e:
-        logger.warning("usage record failed: %s", e)
+RESPONSE_TOKEN_ALLOWANCE = 500
 
 CLASSIFY_PROMPT = """从以下对话中提取有价值的知识点，忽略闲聊、水词、表情、问候等无实质内容的消息。
 
@@ -67,17 +45,23 @@ CLASSIFY_PROMPT = """从以下对话中提取有价值的知识点，忽略闲�
 对每个知识点返回：
 - title: 简短标题（10字以内）
 - content: 知识点内容（保留原文关键信息）
+- category: "todo"（待办/行动项）或 "knowledge"（其他知识点）
 - tags: 标签数组（如 ["技术", "工具"]）
 - source_indices: 来源消息的 index 数组
 - urgency: 重要程度 1-5
 
 返回 JSON 数组，如无有价值内容则返回空数组 []：
-[{{"title": "...", "content": "...", "tags": [...], "source_indices": [0,1], "urgency": 3}}]
+[{{"title": "...", "content": "...", "category": "knowledge", "tags": [...], "source_indices": [0,1], "urgency": 3}}]
 
 仅返回 JSON，不要其他内容。
-
+{rejected_block}
 对话片段：
 {messages}"""
+
+REJECTED_BLOCK = """
+用户此前拒绝过类似下列标题的条目，不要再提取同类内容：
+{titles}
+"""
 
 EXTEND_PROMPT = """你是一个知识扩展助手。基于以下从聊天中提取的知识点，补充背景知识、相关资源和延伸内容。
 
@@ -194,59 +178,38 @@ def _format_window(window: list[dict]) -> str:
     return "\n".join(lines)
 
 
-class TokenBudgetExceeded(Exception):
-    pass
-
-
 class AnalyzerService:
     def __init__(self):
         self.cfg = load_config()
+        self.task_id: str | None = None
+        self.rejected_examples: list[str] = []
         self.last_llm_error: str | None = None
         self.llm_call_count = 0
         self.llm_fail_count = 0
 
-    async def _tokens_used_today(self) -> int:
-        async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
-            rows = await db.execute_fetchall(
-                """SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total
-                   FROM llm_usage
-                   WHERE DATE(timestamp, 'localtime') = DATE('now', 'localtime')"""
-            )
-        return int(rows[0][0]) if rows else 0
-
     async def _check_budget(self, estimated_tokens: int) -> None:
-        if self.cfg.daily_token_budget <= 0:
-            return
-
-        used_today = await self._tokens_used_today()
-        if used_today + estimated_tokens > self.cfg.daily_token_budget:
-            if self.cfg.budget_action == "warn":
-                logger.warning(
-                    "daily token budget would be exceeded: %d + %d > %d",
-                    used_today, estimated_tokens, self.cfg.daily_token_budget,
-                )
-                return
-            raise TokenBudgetExceeded(
-                f"Daily token budget exceeded: {used_today}/{self.cfg.daily_token_budget}"
-            )
+        await budget.check(estimated_tokens)
 
     async def _call_llm(self, prompt: str, purpose: str = "") -> str | None:
-        """Call LLM via configured provider. Returns raw text response."""
-        llm = self.cfg.llm
-
-        if llm.provider == "openai_compatible":
-            return await self._call_openai(prompt, llm, purpose)
-
-        if llm.provider == "codex_cli":
-            return await self._call_codex_cli(prompt, purpose)
-
-        # Default: claude CLI
-        return await self._call_claude_cli(prompt, purpose)
+        """Call LLM via configured provider. Reserves the estimated token cost
+        for the duration of the call so concurrent tasks can't jointly blow the
+        daily budget. Returns raw text response."""
+        estimate = len(prompt) // 3 + RESPONSE_TOKEN_ALLOWANCE
+        await budget.reserve(estimate)
+        try:
+            llm = self.cfg.llm
+            if llm.provider == "openai_compatible":
+                return await self._call_openai(prompt, llm, purpose)
+            if llm.provider == "codex_cli":
+                return await self._call_codex_cli(prompt, purpose)
+            return await self._call_claude_cli(prompt, purpose)
+        finally:
+            budget.release(estimate)
 
     async def _call_claude_cli(self, prompt: str, purpose: str = "") -> str | None:
         self.llm_call_count += 1
         proc = await asyncio.create_subprocess_exec(
-            "claude", "-p", "--output-format", "text", prompt,
+            "claude", "-p", "--output-format", "json", prompt,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -255,13 +218,29 @@ class AnalyzerService:
             self.llm_fail_count += 1
             self.last_llm_error = "claude CLI exit nonzero"
             return None
-        out = stdout.decode().strip()
-        # Claude CLI doesn't surface usage; estimate from char counts (rough
-        # 1 token ≈ 3 chars for Chinese) so the budget bar at least moves.
-        await _record_usage(
-            "claude_cli", "claude", len(prompt) // 3, len(out) // 3, purpose,
+        raw = stdout.decode().strip()
+        out, prompt_tokens, completion_tokens = self._parse_claude_cli_output(raw, prompt)
+        await budget.record(
+            "claude_cli", "claude", prompt_tokens, completion_tokens, purpose, self.task_id,
         )
         return out
+
+    @staticmethod
+    def _parse_claude_cli_output(raw: str, prompt: str) -> tuple[str, int, int]:
+        """--output-format json wraps the reply in {"result": ..., "usage": {...}}
+        with real token counts. Fall back to treating stdout as plain text with
+        char-based estimates (1 token ≈ 3 chars for Chinese) on older CLIs."""
+        try:
+            data = json.loads(raw)
+            out = str(data.get("result") or "").strip()
+            usage = data.get("usage") or {}
+            return (
+                out,
+                int(usage.get("input_tokens") or len(prompt) // 3),
+                int(usage.get("output_tokens") or len(out) // 3),
+            )
+        except (json.JSONDecodeError, TypeError):
+            return raw, len(prompt) // 3, len(raw) // 3
 
     async def _call_codex_cli(self, prompt: str, purpose: str = "") -> str | None:
         """Call OpenAI Codex CLI in non-interactive mode.
@@ -329,9 +308,9 @@ class AnalyzerService:
 
             # Codex doesn't expose token counts via this interface. Estimate
             # for budget tracking parity with claude_cli.
-            await _record_usage(
+            await budget.record(
                 "codex_cli", self.cfg.llm.model or "codex-default",
-                len(prompt) // 3, len(out) // 3, purpose,
+                len(prompt) // 3, len(out) // 3, purpose, self.task_id,
             )
             return out
         finally:
@@ -369,12 +348,13 @@ class AnalyzerService:
                     data = resp.json()
                     content = data["choices"][0]["message"]["content"].strip()
                     usage = data.get("usage") or {}
-                    await _record_usage(
+                    await budget.record(
                         llm.provider,
                         llm.model,
                         int(usage.get("prompt_tokens") or len(prompt) // 3),
                         int(usage.get("completion_tokens") or len(content) // 3),
                         purpose,
+                        self.task_id,
                     )
                     return content
             except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.WriteTimeout) as e:
@@ -395,7 +375,10 @@ class AnalyzerService:
                 logger.warning("LLM call failed: %s", err_msg)
                 return None
 
-    def _parse_llm_response(self, raw: str | None, window_size: int) -> list[dict]:
+    def _parse_llm_response(self, raw: str | None) -> list[dict]:
+        """Parse a JSON-array LLM reply. A non-JSON reply counts as a failed
+        call (llm_fail_count) so prose answers surface as errors instead of a
+        silent "0 items"."""
         if not raw:
             logger.info("LLM returned empty/None response")
             return []
@@ -411,20 +394,34 @@ class AnalyzerService:
         if end >= 0 and end < len(raw) - 1:
             raw = raw[: end + 1]
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
         except json.JSONDecodeError as e:
+            self.llm_fail_count += 1
+            self.last_llm_error = f"LLM 返回非 JSON: {str(e)[:80]}"
             logger.warning("LLM JSON parse failed: %s; raw[:200]=%s", e, raw[:200])
             return []
+        if not isinstance(parsed, list):
+            self.llm_fail_count += 1
+            self.last_llm_error = "LLM 返回的 JSON 不是数组"
+            return []
+        return [item for item in parsed if isinstance(item, dict)]
+
+    def _classify_prompt(self, text: str) -> str:
+        rejected_block = ""
+        if self.rejected_examples:
+            titles = "\n".join(f"- {t}" for t in self.rejected_examples[:8])
+            rejected_block = REJECTED_BLOCK.format(titles=titles)
+        return CLASSIFY_PROMPT.format(rejected_block=rejected_block, messages=text)
 
     async def extract_knowledge(self, window: list[dict]) -> list[dict]:
-        text = _format_window(window)
-        prompt = CLASSIFY_PROMPT.format(messages=text)
-        await self._check_budget(len(text) // 3 + 500)
+        prompt = self._classify_prompt(_format_window(window))
         raw = await self._call_llm(prompt, purpose="extract")
-        items = self._parse_llm_response(raw, len(window))
+        items = self._parse_llm_response(raw)
         # attach source message ids
         for item in items:
             indices = item.pop("source_indices", [])
+            if not isinstance(indices, list):
+                indices = []
             item["source_message_ids"] = json.dumps([
                 window[i]["id"] for i in indices
                 if isinstance(i, int) and 0 <= i < len(window)
@@ -433,21 +430,35 @@ class AnalyzerService:
 
     async def extend_knowledge(self, item: dict) -> str:
         prompt = EXTEND_PROMPT.format(knowledge=f"**{item['title']}**\n{item['content']}")
-        await self._check_budget(len(item['content']) // 3 + 300)
         return await self._call_llm(prompt, purpose="extend") or ""
 
-    async def analyze_messages(self, messages: list[dict], on_progress=None) -> tuple[list[dict], str]:
-        """Extract knowledge items from messages. Returns (knowledge_items, summary).
+    async def analyze_messages(
+        self,
+        messages: list[dict],
+        on_progress=None,
+        vip_extra: frozenset[str] | set[str] = frozenset(),
+    ) -> tuple[list[dict], str, bool]:
+        """Extract knowledge items from messages.
 
-        Sets self.last_llm_error to the most recent LLM failure message (if any),
-        so callers can surface "LLM 报错" instead of a misleading "0 知识点"."""
-        passed, noise = filter_messages(messages)
+        Returns (knowledge_items, summary, completed). `completed` is False when
+        the run stopped early (token budget) — callers must not advance the
+        analysis cursor past unprocessed messages in that case.
+
+        Windows are split BEFORE noise filtering so conversation boundaries are
+        derived from real time gaps, not gaps created by removed noise."""
         batch_id = uuid.uuid4().hex[:8]
         all_items = []
-        windows = split_into_windows(passed)
+        windows = []
+        noise_count = 0
+        for w in split_into_windows(messages):
+            passed, noise = filter_messages(w, self.cfg, vip_extra)
+            noise_count += len(noise)
+            if passed:
+                windows.append(passed)
         total = len(windows)
-        logger.info("in=%d passed=%d noise=%d windows=%d", len(messages), len(passed), len(noise), total)
+        logger.info("in=%d noise=%d windows=%d", len(messages), noise_count, total)
         self.last_llm_error = None
+        completed = True
 
         for i, window in enumerate(windows):
             if on_progress and total > 0:
@@ -463,19 +474,24 @@ class AnalyzerService:
             except TokenBudgetExceeded:
                 logger.warning("token budget exceeded at window %d/%d", i+1, total)
                 self.last_llm_error = "Daily token budget exceeded"
+                completed = False
                 break
 
-        summary = await self._summarize(messages)
+        summary = ""
+        if completed:
+            try:
+                summary = await self._summarize(messages)
+            except TokenBudgetExceeded:
+                completed = False
         logger.info("done: %d items total, %d/%d llm fails", len(all_items), self.llm_fail_count, self.llm_call_count)
-        return all_items, summary
+        return all_items, summary, completed
 
     async def _summarize(self, messages: list[dict]) -> str:
         """Generate an overall summary of the messages."""
         if not messages:
             return ""
-        # Cap at 30 most-recent so the summary prompt fits even on small (4k) contexts.
-        text = _format_window(messages[:30])
+        # Cap at the 30 most-recent so the prompt fits even on small (4k) contexts.
+        text = _format_window(messages[-30:])
         prompt = SUMMARY_PROMPT.format(messages=text)
-        await self._check_budget(len(text) // 3 + 300)
         raw = await self._call_llm(prompt, purpose="summarize")
         return raw or ""

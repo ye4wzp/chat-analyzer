@@ -79,9 +79,8 @@ class TaggerService:
             contact_name=contact_name or "未知",
             messages=text,
         )
-        await self.analyzer._check_budget(len(text) // 3 + 300)
         raw = await self.analyzer._call_llm(prompt, purpose="tag")
-        return self._normalize(self.analyzer._parse_llm_response(raw, 0), active_tags)
+        return self._normalize(self.analyzer._parse_llm_response(raw), active_tags)
 
     async def summarize_group(self, tag_name: str, contacts: list[dict]) -> str:
         """Aggregate insight across contacts sharing a tag. `contacts` is a list
@@ -94,7 +93,6 @@ class TaggerService:
             blocks.append(f"【{c['name']}】\n{body}")
         text = "\n\n".join(blocks)
         prompt = INSIGHT_PROMPT.format(tag_name=tag_name, count=len(contacts), messages=text)
-        await self.analyzer._check_budget(len(text) // 3 + 400)
         return await self.analyzer._call_llm(prompt, purpose="tag_insight") or ""
 
     @staticmethod

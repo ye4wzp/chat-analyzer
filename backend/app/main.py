@@ -2,10 +2,12 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api import (
+    aliases,
     analyze,
     backups,
     chats,
@@ -24,9 +26,10 @@ from app.api import (
     telegram,
     todos,
 )
+from app.core.config import get_api_token
 from app.core.database import DB_PATH, init_db
 from app.core.scheduler import scheduler_loop
-from app.core.tasks import _pending_results, _tasks
+from app.core.tasks import _tasks
 from app.models.analyze import ConfirmRequest
 from app.models.config import ConfigUpdate
 
@@ -55,9 +58,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def api_token_guard(request: Request, call_next):
+    """Optional shared-secret auth for LAN exposure. Off unless config.api_token
+    is set. EventSource can't send headers, so SSE clients pass ?token=."""
+    token = get_api_token()
+    if token and request.url.path.startswith("/api"):
+        supplied = (
+            request.headers.get("x-api-token")
+            or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+            or request.query_params.get("token", "")
+        )
+        if supplied != token:
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
 for module in (
     dashboard, messages, chats, search, config,
-    sync, qq, telegram, tasks, analyze, knowledge, scheduler, backups, inbox, tags, todos,
+    sync, qq, telegram, tasks, analyze, knowledge, scheduler, backups, inbox, tags, todos, aliases,
 ):
     app.include_router(module.router)
 
@@ -74,7 +94,6 @@ __all__ = [
     "ConfirmRequest",
     "confirm_analysis",
     "update_config",
-    "_pending_results",
     "_tasks",
     "DB_PATH",
 ]

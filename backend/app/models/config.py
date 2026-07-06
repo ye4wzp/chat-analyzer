@@ -2,6 +2,8 @@ from typing import Optional
 
 from pydantic import BaseModel
 
+from app.core.config import SemanticTrigger
+
 
 class ConfigUpdate(BaseModel):
     filter_mode: Optional[str] = None
@@ -26,3 +28,5 @@ class ConfigUpdate(BaseModel):
     add_keyword: Optional[str] = None
     remove_keyword: Optional[str] = None
     keywords: Optional[list[str]] = None
+    semantic_triggers: Optional[list[SemanticTrigger]] = None
+    api_token: Optional[str] = None  # "********" means keep current
