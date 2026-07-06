@@ -103,17 +103,20 @@ chat-analyzer/
 
 ```
 [微信 wx-cli] ─┐
-[QQ QCE API]  ─┼─→ sync 模块 → SQLite messages 表
+[QQ QCE API]  ─┼─→ sync 模块 → SQLite messages 表（FTS5 全文索引，触发器同步）
 [Telethon]    ─┘                       ↓
-                              pre_filter 正则去噪
+                    analysis_state 检查点选取未分析消息（积压分批、首次取最新）
                                        ↓
-                              时间窗口分割（30min）
+                    时间窗口分割（30min）→ 窗口内 pre_filter 去噪
                                        ↓
-                              LLM 分类 + 紧急度 + 摘要
+                    LLM 提取（knowledge/todo + 紧急度）+ 整体摘要
+                    （被拒条目作为负例注入 prompt）
                                        ↓
-                              用户审核表格（勾选）
+                    落库 analysis_batches / pending_items（重启不丢）
                                        ↓
-                              入库为 analyzed_messages / knowledge_points
+                    用户审核勾选 → 精确+语义去重 → knowledge_items / analysis_results
+                                       ↓
+                    自动增量 embed（语义搜索始终覆盖最新知识点）
 ```
 
 ---
@@ -207,9 +210,17 @@ chat-analyzer/
 | GET / PUT | `/api/config` | 获取 / 更新配置（敏感字段脱敏） |
 | GET | `/api/llm/models` | LLM 模型列表 |
 | GET | `/api/llm/test` | 测试 LLM 连接 |
-| POST | `/api/analyze` | 启动分析任务 |
-| GET | `/api/analyze/{id}/results` | 分析结果（审核用） |
-| POST | `/api/analyze/{id}/confirm` | 确认保存选中的结果 |
+| POST | `/api/analyze` | 启动分析任务（已在运行返回 409） |
+| GET | `/api/analyze/pending` | 待审核批次列表（含定时分析产出） |
+| GET | `/api/analyze/{id}/results` | 分析结果（审核用，条目带 id） |
+| POST | `/api/analyze/{id}/confirm` | 按条目 id 确认保存（未选中项记为拒绝，回流为负例） |
+| POST | `/api/analyze/{id}/discard` | 丢弃整个批次 |
+| GET | `/api/knowledge/batches` | 最近入库批次 |
+| DELETE | `/api/knowledge/batch/{batch_id}` | 批次级撤销 |
+| GET | `/api/sync/health` | 各平台同步健康度 + 长期未同步会话 |
+| GET | `/api/events` | 全局 SSE：任务列表 + 收件箱未读数（替代前端轮询） |
+| GET / POST | `/api/aliases` | 跨平台身份别名列表 / 新增 |
+| DELETE | `/api/aliases/{id}` | 删除别名 |
 | POST | `/api/sync/wechat` | 同步微信 |
 | POST | `/api/qq/test` | 测试 QQ QCE 连接 |
 | POST | `/api/sync/qq` | 同步 QQ（QCE） |
@@ -252,7 +263,8 @@ npm run build
 # 2. 启动后端
 cd chat-analyzer/backend
 source .venv/bin/activate
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# 局域网访问需先在 设置 → 常规 配置 API Token，再用 --host 0.0.0.0
 ```
 
 访问 → http://localhost:8000

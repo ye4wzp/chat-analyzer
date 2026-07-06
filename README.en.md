@@ -11,14 +11,15 @@
 ## ✨ Features
 
 - **Multi-platform aggregation** — WeChat (wx-cli), QQ (NapCat + QCE), and Telegram (Telethon account API) messages land in a single SQLite database; platform is just a column, not a silo.
-- **LLM analysis pipeline** — pre-filter denoising → split into 30-minute conversation windows → per-window classification (important / todo / casual + urgency) → overall summary. Results go to a review table first; nothing is saved until you confirm.
-- **Knowledge base** — knowledge points extracted from chats, with keyword / semantic search (embeddings), related-item recommendations, AI expansion, editing, and Markdown export.
+- **LLM analysis pipeline** — split into conversation windows → in-window denoising → per-window extraction (knowledge / todo + urgency) → overall summary. Truly incremental: per-chat `analysis_state` checkpoints advance even on zero-yield runs and drain backlogs across runs; results persist in a review-batch table (restart-safe), nothing is saved until you confirm, and rejected items feed back into the prompt as negative examples.
+- **Knowledge base** — keyword / semantic search (embeddings, numpy-ranked), related-item recommendations, AI expansion, editing, Markdown export; exact + semantic dedup at save time, auto-embedding on save, stale-vector invalidation on edit, batch-level undo.
 - **Contact tagging** — the LLM reads a contact's history and auto-tags them (single / batch / scheduled), combining a preset tag library with free-form AI suggestions; pending-review queue, group insights, and one-click "add to denoise allowlist." Cross-platform, in-app only, never written back to WeChat.
-- **To-do board** — aggregates to-dos and action items produced by analysis, sorted by urgency with check-off completion.
-- **Keyword triggers + inbox** — messages matching your keywords land in an inbox, with macOS notifications.
-- **Scheduler** — five independent jobs: sync (WeChat / QQ / Telegram), auto-analyze, and auto-tag.
+- **Cross-platform identity** — `contact_aliases` maps per-platform accounts to one person; VIP allowlisting resolves through aliases so display-name changes don't break it.
+- **To-do board + reminders** — aggregates to-dos produced by analysis, sorted by urgency with check-off completion; optional scheduled macOS reminders for open urgent items.
+- **Triggers + inbox** — keyword triggers (FTS5 full-text index) plus semantic triggers ("notify me when people talk about renovations"); matches land in an inbox with macOS notifications.
+- **Scheduler** — sync (WeChat / QQ / Telegram, serialized against DB contention), auto-analyze, auto-tag, and to-do reminders; run state lives in SQLite with uniform UTC timestamps.
 - **Cool Slate design system** — a dark-first "cool terminal" UI with one-click dark / light theme switch, monospace for IDs / timestamps / numbers, and a same-hue chart ramp.
-- **Security & usage** — config file at `0600` perms with secrets redacted in responses; daily token budget and usage tracking; automatic SQLite backups.
+- **Security & usage** — binds `127.0.0.1` by default with an optional API token (required for LAN exposure); config file at `0600` perms with secrets redacted; daily token budget with in-flight reservations, embedding accounting, and per-task attribution; automatic SQLite backups.
 
 ## 🖼 Screenshots
 
@@ -49,7 +50,8 @@ Prerequisites: Python 3.12, Node 18+, and at least one working LLM backend (an a
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# For LAN access: set an API token in Settings → General first, then use --host 0.0.0.0
 
 # 2. Frontend (dev, hot reload)
 cd frontend

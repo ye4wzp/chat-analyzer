@@ -13,14 +13,15 @@ A local-first tool that aggregates your WeChat / QQ / Telegram chat history into
 ## ✨ 功能特性
 
 - **多平台聚合** —— 微信（wx-cli）、QQ（NapCat + QCE）、Telegram（Telethon 账号 API）的消息统一进一个 SQLite，平台只是字段不是孤岛。
-- **LLM 分析流水线** —— 预过滤去噪 → 30 分钟时间窗切分 → 逐窗分类（important / todo / casual + 紧急度）→ 整体摘要。结果先入审核表，用户勾选确认才入库。
-- **知识库** —— 从聊天中提取的知识点，支持关键词 / 语义搜索（Embedding）、关联推荐、AI 扩展、编辑、导出 Markdown。
+- **LLM 分析流水线** —— 时间窗切分 → 窗口内去噪 → 逐窗提取（knowledge / todo + 紧急度）→ 整体摘要。真增量：`analysis_state` 检查点表按会话推进，积压分批消化、零产出也推进；结果持久化进待审核批次表（重启不丢），用户勾选确认才入库，被拒条目回流为提取 prompt 的负例。
+- **知识库** —— 关键词 / 语义搜索（Embedding，numpy 排序）、关联推荐、AI 扩展、编辑、导出 Markdown；保存时精确 + 语义去重，入库自动增量 embed，编辑自动失效重建；支持批次级撤销。
 - **联系人标签** —— AI 读取聊天记录自动给好友打标签（单个 / 批量 / 定时），预设标签库 + AI 自由补充结合；待审核池、群体洞察、一键加入去噪白名单。跨平台、纯应用内、不写回微信。
-- **待办看板** —— 聚合分析产出的待办与行动项，按紧急度排序、可勾选完成。
-- **关键词触发器 + 收件箱** —— 命中关键词的消息进收件箱，配 macOS 通知。
-- **定时任务** —— 同步（微信 / QQ / Telegram）、自动分析、自动打标签五个独立调度任务。
+- **跨平台身份合并** —— `contact_aliases` 把多平台账号映射到同一个人，VIP 白名单经别名解析，改昵称不失效。
+- **待办看板 + 提醒** —— 聚合分析产出的待办，按紧急度排序、可勾选完成；可定时提醒逾期未完成的紧急待办（macOS 通知）。
+- **触发器 + 收件箱** —— 关键词触发（FTS5 全文索引加速）+ 语义触发（“聊到装修相关就通知我”），命中进收件箱，配 macOS 通知。
+- **定时任务** —— 同步（微信 / QQ / Telegram，串行防锁）、自动分析、自动打标签、待办提醒；运行状态存 SQLite，统一 UTC，时间不漂移。
 - **Cool Slate 设计系统** —— 冷峻终端风的深色为主界面，深 / 浅双主题一键切换，ID / 时间戳 / 数值用等宽字体，图表同色相阶梯。
-- **安全与用量** —— 配置文件 `0600` 权限、敏感字段脱敏返回；每日 Token 预算与用量追踪；SQLite 自动备份。
+- **安全与用量** —— 默认只绑 `127.0.0.1`，可选 API Token（局域网暴露必设）；配置文件 `0600` 权限、敏感字段脱敏返回；每日 Token 预算含在途预留与 embedding 记账，按任务归因；SQLite 自动备份。
 
 ## 🖼 界面预览
 
@@ -51,7 +52,8 @@ A local-first tool that aggregates your WeChat / QQ / Telegram chat history into
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# 如需局域网访问：先在 设置 → 常规 配置 API Token，再改用 --host 0.0.0.0
 
 # 2. 前端（开发模式，热更新）
 cd frontend
