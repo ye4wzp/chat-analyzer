@@ -6,6 +6,7 @@ concurrent tasks (analyze + tag batch both passing the check before either's
 usage row lands).
 """
 import logging
+from datetime import datetime, timezone
 
 import aiosqlite
 
@@ -21,12 +22,21 @@ class TokenBudgetExceeded(Exception):
     pass
 
 
+def _local_day_start_utc() -> str:
+    """UTC instant of local midnight, in llm_usage.timestamp's CURRENT_TIMESTAMP
+    format. Used as a sargable lower bound so idx_usage_ts is actually hit —
+    wrapping the column in DATE(timestamp,'localtime') defeated the index."""
+    local_now = datetime.now().astimezone()
+    local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return local_midnight.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
 async def tokens_used_today() -> int:
     async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         rows = await db.execute_fetchall(
             """SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0)
-               FROM llm_usage
-               WHERE DATE(timestamp, 'localtime') = DATE('now', 'localtime')"""
+               FROM llm_usage WHERE timestamp >= ?""",
+            (_local_day_start_utc(),),
         )
     return int(rows[0][0]) if rows else 0
 

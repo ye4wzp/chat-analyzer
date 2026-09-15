@@ -107,9 +107,15 @@ async def _import_full_export(chat_list: list[dict]) -> dict:
                     last_ts = ts
 
             if last_ts:
+                # DO UPDATE (not REPLACE) so the live-sync last_msg_id watermark
+                # survives a file import; only advance last_timestamp.
                 await db.execute(
-                    """INSERT OR REPLACE INTO sync_state (platform, chat_id, last_timestamp, updated_at)
-                       VALUES ('telegram', ?, ?, CURRENT_TIMESTAMP)""",
+                    """INSERT INTO sync_state (platform, chat_id, last_timestamp, updated_at)
+                       VALUES ('telegram', ?, ?, CURRENT_TIMESTAMP)
+                       ON CONFLICT(platform, chat_id) DO UPDATE SET
+                         last_timestamp=MAX(excluded.last_timestamp,
+                                            COALESCE(sync_state.last_timestamp, excluded.last_timestamp)),
+                         updated_at=CURRENT_TIMESTAMP""",
                     (chat_id, last_ts),
                 )
 

@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react"
-import { fetchAPI, type PendingKnowledge } from "@/lib/api"
+import { toast } from "sonner"
+import { fetchAPI, getErrorMessage, type PendingKnowledge } from "@/lib/api"
 import { useTaskRunner } from "@/hooks/useTaskRunner"
 
 /**
@@ -42,7 +43,12 @@ export function useAnalyzeRunner() {
         setResults(r)
         setTaskId(id)
         setSummary(task.summary || "")
-      } catch { /* ignore — error toast already up */ }
+      } catch (e) {
+        // The run finished but its results couldn't be fetched (batch expired /
+        // discarded). Surface it — otherwise the success toast fires with no
+        // review modal and no explanation.
+        toast.error(`分析已完成但结果获取失败：${getErrorMessage(e)}`)
+      }
     },
   }), [runTask])
 

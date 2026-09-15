@@ -62,6 +62,14 @@ npm run dev          # http://localhost:5173
 npm run build        # then open http://localhost:8000
 ```
 
+### Double-click launcher (macOS)
+
+```bash
+scripts/make-launcher.sh     # builds "Chat Analyzer.app" into ~/Applications; drag it to the Dock
+```
+
+Icon source: `assets/icon/icon.svg`. Double-clicking starts the backend in Terminal and opens `http://127.0.0.1:8000`; the first run creates the venv, installs deps and builds the frontend. Closing the window stops the server. Re-run the script if you move the project.
+
 Connect data sources (WeChat / QQ / Telegram) and pick an LLM under **Settings → Data Sources / AI Model**. See the [Chinese project guide](chat-analyzer-项目说明.md) for full details.
 
 ## 🗂 Data storage
@@ -72,6 +80,10 @@ Connect data sources (WeChat / QQ / Telegram) and pick an LLM under **Settings �
 | Config (`0600` perms) | `~/.chat-analyzer/config.json` |
 
 > The config holds API keys / QQ token / Telegram session and lives **in your home directory, outside the repo** — it never enters git.
+
+- Moving machines: copy the whole `~/.chat-analyzer` directory and start with `CHAT_ANALYZER_HOME=/new/path`.
+- Backups live in `~/.chat-analyzer/backups/` (taken before each sync, 5 kept). Restore: stop the server → `gunzip -c chat.db.<ts>.bak.gz > data/chat.db` → restart; the stats rollups detect the rollback and rebuild themselves.
+- **Run exactly one process** (no `uvicorn --workers N`, no double launch): task state and the stats lock are in-process, and a second instance is refused by the startup lock.
 
 ## 🔒 Privacy
 

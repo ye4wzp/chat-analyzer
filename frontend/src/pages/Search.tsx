@@ -55,33 +55,46 @@ export default function Search() {
   const [searchedKeyword, setSearchedKeyword] = useState("")
   const [filters, setFilters] = useState({ platform: "", category: "", since: "", until: "" })
   const offsetRef = useRef(0)
+  // Snapshot of the query+filters actually executed, so "加载更多" paginates the
+  // executed search (not whatever's now in the input) and a stale response from
+  // an older search can't clobber a newer one.
+  const executedRef = useRef<{ keyword: string; filters: typeof filters }>({ keyword: "", filters })
+  const reqRef = useRef(0)
 
   const search = async (append = false) => {
-    if (!keyword.trim()) return
+    if (loading) return
+    const active = append
+      ? executedRef.current
+      : { keyword: keyword.trim(), filters }
+    if (!active.keyword) return
+
+    const reqId = ++reqRef.current
     setLoading(true)
     setError("")
     try {
-      const params = new URLSearchParams({ keyword })
-      if (filters.platform) params.set("platform", filters.platform)
-      if (filters.category) params.set("category", filters.category)
-      if (filters.since) params.set("since", filters.since)
-      if (filters.until) params.set("until", filters.until)
+      const params = new URLSearchParams({ keyword: active.keyword })
+      if (active.filters.platform) params.set("platform", active.filters.platform)
+      if (active.filters.category) params.set("category", active.filters.category)
+      if (active.filters.since) params.set("since", active.filters.since)
+      if (active.filters.until) params.set("until", active.filters.until)
       params.set("offset", String(append ? offsetRef.current : 0))
       params.set("limit", String(PAGE_SIZE))
       const data = await fetchAPI<Result[]>(`/search?${params}`)
+      if (reqId !== reqRef.current) return  // superseded by a newer search
       if (append) {
         setResults(prev => [...prev, ...data])
         offsetRef.current += data.length
       } else {
+        executedRef.current = active
         setResults(data)
         offsetRef.current = data.length
-        setSearchedKeyword(keyword)
+        setSearchedKeyword(active.keyword)
       }
       setHasMore(data.length === PAGE_SIZE)
     } catch (e: unknown) {
-      setError(getErrorMessage(e))
+      if (reqId === reqRef.current) setError(getErrorMessage(e))
     } finally {
-      setLoading(false)
+      if (reqId === reqRef.current) setLoading(false)
     }
   }
 

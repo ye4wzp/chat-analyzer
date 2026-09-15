@@ -122,6 +122,10 @@ async def embed_batch(texts: list[str], model: str, task_id: str | None = None) 
     except budget.TokenBudgetExceeded as e:
         logger.warning("batch embed skipped: %s", e)
         return [None] * len(texts)
+    # `fell_back` lets us release the batch reservation BEFORE the per-text
+    # fallback re-reserves each item — otherwise the estimate is counted twice
+    # in-flight and can trip a false TokenBudgetExceeded near the daily cap.
+    fell_back = False
     try:
         async with httpx.AsyncClient(timeout=300) as client:
             resp = await client.post(
@@ -131,24 +135,30 @@ async def embed_batch(texts: list[str], model: str, task_id: str | None = None) 
             )
             if resp.status_code != 200:
                 logger.warning("batch embed %s failed: %s %s", model, resp.status_code, resp.text[:200])
-                return await _embed_each(texts, model, task_id)
-            data = resp.json()
-            # Server may return entries out of order; sort by `index` to be safe.
-            entries = sorted(data.get("data", []), key=lambda e: e.get("index", 0))
-            vecs = [e["embedding"] for e in entries]
-            if len(vecs) != len(texts):
-                logger.warning("batch embed length mismatch: in=%d out=%d", len(texts), len(vecs))
-                return await _embed_each(texts, model, task_id)
-            usage = data.get("usage") or {}
-            await budget.record(
-                "embedding", model, int(usage.get("prompt_tokens") or estimate), 0, "embed", task_id,
-            )
-            return vecs
+                fell_back = True
+            else:
+                data = resp.json()
+                # Server may return entries out of order; sort by `index` to be safe.
+                entries = sorted(data.get("data", []), key=lambda e: e.get("index", 0))
+                vecs = [e["embedding"] for e in entries]
+                if len(vecs) != len(texts):
+                    logger.warning("batch embed length mismatch: in=%d out=%d", len(texts), len(vecs))
+                    fell_back = True
+                else:
+                    usage = data.get("usage") or {}
+                    await budget.record(
+                        "embedding", model, int(usage.get("prompt_tokens") or estimate), 0, "embed", task_id,
+                    )
+                    return vecs
     except Exception as e:
         logger.warning("batch embed exception: %s", e)
-        return await _embed_each(texts, model, task_id)
+        fell_back = True
     finally:
         budget.release(estimate)
+
+    if fell_back:
+        return await _embed_each(texts, model, task_id)
+    return [None] * len(texts)
 
 
 async def _embed_each(texts: list[str], model: str, task_id: str | None) -> list[list[float] | None]:
@@ -233,7 +243,22 @@ async def find_semantic_duplicates(items: list[dict], task_id: str | None = None
             "SELECT embedding FROM knowledge_items WHERE embedding IS NOT NULL AND embedding_model = ?",
             (model,),
         )
-    existing = [row[0] for row in rows]
+
+    dim = next((len(v) for v in vecs if v is not None), None)
+    if dim is None:
+        return set()
+
+    # Parse the stored vectors into one row-normalized matrix ONCE, then score
+    # each new item with a single matrix-vector product — instead of re-parsing
+    # and re-stacking every blob for every item.
+    stored = [np.frombuffer(row[0], dtype=np.float32) for row in rows]
+    stored = [v for v in stored if v.shape == (dim,)]
+    matrix = None
+    if stored:
+        matrix = np.vstack(stored)
+        norms = np.linalg.norm(matrix, axis=1)
+        norms[norms == 0] = 1.0
+        matrix = matrix / norms[:, None]
 
     duplicates: set[int] = set()
     kept: list[np.ndarray] = []
@@ -245,11 +270,9 @@ async def find_semantic_duplicates(items: list[dict], task_id: str | None = None
         if qn == 0:
             continue
         q = q / qn
-        if existing:
-            top = rank_by_similarity(vec, existing, 1)
-            if top and top[0][1] >= SEMANTIC_DUP_THRESHOLD:
-                duplicates.add(i)
-                continue
+        if matrix is not None and float((matrix @ q).max()) >= SEMANTIC_DUP_THRESHOLD:
+            duplicates.add(i)
+            continue
         if any(float(q @ k) >= SEMANTIC_DUP_THRESHOLD for k in kept):
             duplicates.add(i)
             continue

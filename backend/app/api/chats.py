@@ -6,10 +6,30 @@ from app.core import database
 router = APIRouter()
 
 
+async def _chats_from_stats(db: aiosqlite.Connection) -> list[dict] | None:
+    """Chat list from the stats_chats rollup (milliseconds). Returns None when
+    the rollup hasn't been built yet so callers can fall back to the raw scan."""
+    state = {r[0]: r[1] for r in await db.execute_fetchall("SELECT key, value FROM stats_state")}
+    if "built_at" not in state:
+        return None
+    rows = await db.execute_fetchall(
+        """SELECT platform, chat_id, MAX(chat_name) AS chat_name, MAX(chat_type) AS chat_type,
+                  SUM(n) AS msg_count, MIN(first_ts) AS earliest, MAX(last_ts) AS latest
+           FROM stats_chats GROUP BY platform, chat_id ORDER BY latest DESC"""
+    )
+    return [dict(r) for r in rows]
+
+
 @router.get("/api/chats")
 async def get_chats():
+    """Chat list. Served from the pre-aggregated stats_chats table (the raw
+    GROUP BY over messages took ~10s at 1.8M rows); the rollup lags a sync by
+    at most one background stats refresh."""
     async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
+        fast = await _chats_from_stats(db)
+        if fast is not None:
+            return fast
         rows = await db.execute_fetchall(
             """SELECT platform, chat_id, chat_name, chat_type,
                       COUNT(*) as msg_count,
@@ -97,14 +117,29 @@ async def chat_profile(platform: str, chat_id: str):
             (chat_name,),
         )
 
-        # Hourly histogram. Pull only the timestamp column; hour-extract in
-        # Python so we don't need to teach SQLite three timestamp formats.
-        ts_rows = await db.execute_fetchall(
-            "SELECT timestamp FROM messages WHERE platform=? AND chat_id=?",
+        # Hourly histogram. Normalized ISO timestamps ('...THH:...' local-naive)
+        # aggregate in SQL — no need to pull every row into Python. Only legacy
+        # epoch stragglers (digits; drained by the startup migration) fall back
+        # to a narrow Python pass.
+        hours = [0] * 24
+        iso_rows = await db.execute_fetchall(
+            """SELECT CAST(substr(timestamp, 12, 2) AS INTEGER) AS hour, COUNT(*) AS n
+               FROM messages
+               WHERE platform=? AND chat_id=? AND timestamp GLOB '????-??-??[T ]??:??:*'
+               GROUP BY hour""",
             (platform, chat_id),
         )
-        hours = [0] * 24
-        for r in ts_rows:
+        for r in iso_rows:
+            h = r["hour"]
+            if h is not None and 0 <= h < 24:
+                hours[h] += int(r["n"])
+        epoch_rows = await db.execute_fetchall(
+            """SELECT timestamp FROM messages
+               WHERE platform=? AND chat_id=? AND timestamp GLOB '[0-9]*'
+                 AND timestamp NOT GLOB '????-??-??*'""",
+            (platform, chat_id),
+        )
+        for r in epoch_rows:
             h = _hour_from_ts(r["timestamp"])
             if h is not None and 0 <= h < 24:
                 hours[h] += 1

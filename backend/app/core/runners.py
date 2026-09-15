@@ -12,13 +12,32 @@ from app.models.analyze import AnalyzeRequest
 
 
 async def _post_sync_scan() -> None:
-    """Run keyword trigger scan after a successful sync. Best-effort — any
-    failure here must not surface as a sync failure since data already landed."""
+    """Run keyword trigger scan after a successful sync, then kick the stats
+    rollup. Best-effort — any failure here must not surface as a sync failure
+    since data already landed."""
     try:
         from app.services.triggers import scan_for_matches
         await scan_for_matches()
     except Exception:
         pass
+    try:
+        from app.services.stats import spawn_refresh_if_needed
+        spawn_refresh_if_needed()
+    except Exception:
+        pass
+
+
+async def run_stats_refresh(task_id: str, *, full: bool = False):
+    from app.services.stats import refresh
+    _tasks[task_id].update(status="running", progress=1, message="正在更新统计...")
+    try:
+        result = await refresh(progress=make_progress(task_id), full=full)
+        _tasks[task_id].update(
+            status="done", progress=100,
+            message=f"统计已更新（处理 {result['processed']:,} 条）", **result,
+        )
+    except Exception as e:
+        _tasks[task_id].update(status="error", progress=0, message=str(e))
 
 
 async def run_sync(task_id: str, new_only: bool):
@@ -51,6 +70,7 @@ async def run_import(task_id: str, platform: str, path: str):
             from app.services.sync.telegram import import_telegram_dir, import_telegram_json
             result = await (import_telegram_dir(path) if Path(path).is_dir() else import_telegram_json(path))
 
+        await _post_sync_scan()
         _tasks[task_id].update(
             status="done", progress=100,
             message=f"导入完成: {result['imported']} 条消息 ({result.get('chats', 1)} 个聊天)",
@@ -69,9 +89,19 @@ async def run_qq_sync(task_id: str):
         await maybe_backup_before_sync()
         result = await sync_all(progress=make_progress(task_id))
         await _post_sync_scan()
+        skipped = result.get("skipped") or []
+        pending = result.get("pending") or []
+        # 全部聊天都被跳过就是失败，不能报“完成”——否则真实故障会被 0/0 掩盖。
+        failed_all = bool(skipped) and not result["chats"]
+        message = ("同步失败" if failed_all else "同步完成")
+        message += f": {result['imported']} 条消息 ({result['chats']} 个聊天)"
+        if pending:
+            message += f"，{len(pending)} 个会话旧历史未翻完（再点一次继续）"
+        if skipped:
+            head = "、".join(skipped[:3]) + (" 等" if len(skipped) > 3 else "")
+            message += f"，{len(skipped)} 个跳过: {head}"
         _tasks[task_id].update(
-            status="done", progress=100,
-            message=f"同步完成: {result['imported']} 条消息 ({result['chats']} 个聊天)",
+            status="error" if failed_all else "done", progress=100, message=message,
         )
     except Exception as e:
         _tasks[task_id].update(status="error", progress=0, message=str(e))
@@ -123,6 +153,23 @@ def spawn_embed_if_needed() -> None:
         return
     task_id = create_task("embed")
     spawn_cancellable(task_id, run_embed_knowledge(task_id))
+
+
+async def run_report(task_id: str, period: str, notify: bool = False, year: int | None = None):
+    from app.services.digest import PERIODS, generate_digest
+    label = f"{year} 年报" if (period == "yearly" and year) else PERIODS[period][1]
+    _tasks[task_id].update(status="running", progress=5, message=f"正在生成{label}...")
+    try:
+        result = await generate_digest(period, progress=make_progress(task_id), task_id=task_id, year=year)
+        _tasks[task_id].update(
+            status="done", progress=100,
+            message=f"{label}已生成（{result['range']}）", report_id=result["id"],
+        )
+        if notify:
+            from app.services.triggers import _osascript_notify
+            await _osascript_notify(f"{label}已生成", "到「报告」页查看")
+    except Exception as e:
+        _tasks[task_id].update(status="error", progress=0, message=str(e))
 
 
 async def run_qq_install(task_id: str, force: bool):
@@ -259,50 +306,70 @@ async def _select_unanalyzed(db, conditions: list[str], params: list, limit: int
     the seed is reachable via full=true or since=...)."""
     scope_where = (" AND " + " AND ".join(conditions)) if conditions else ""
 
+    # (timestamp, id) composite cursor: strict on timestamp, then break ties by
+    # id so a burst of same-second messages split across runs is never skipped.
     backlog = await db.execute_fetchall(
         f"""SELECT {_MSG_COLUMNS} FROM messages m
             JOIN analysis_state s ON s.platform = m.platform AND s.chat_id = m.chat_id
-            WHERE s.last_analyzed_ts IS NOT NULL AND m.timestamp > s.last_analyzed_ts{scope_where}
-            ORDER BY m.timestamp ASC LIMIT ?""",
+            WHERE s.last_analyzed_ts IS NOT NULL
+              AND (m.timestamp > s.last_analyzed_ts
+                   OR (s.last_analyzed_id IS NOT NULL
+                       AND m.timestamp = s.last_analyzed_ts AND m.id > s.last_analyzed_id))
+              {scope_where}
+            ORDER BY m.timestamp ASC, m.id ASC LIMIT ?""",
         [*params, limit],
     )
     rows = [dict(r) for r in backlog]
 
     remaining = limit - len(rows)
     if remaining > 0:
+        # Tie-break by id so the "newest N" cut is deterministic and the seeded
+        # set aligns with the (timestamp, id) checkpoint written afterwards.
         seed = await db.execute_fetchall(
             f"""SELECT {_MSG_COLUMNS} FROM messages m
                 LEFT JOIN analysis_state s ON s.platform = m.platform AND s.chat_id = m.chat_id
                 WHERE s.chat_id IS NULL{scope_where}
-                ORDER BY m.timestamp DESC LIMIT ?""",
+                ORDER BY m.timestamp DESC, m.id DESC LIMIT ?""",
             [*params, remaining],
         )
         rows.extend(dict(r) for r in reversed(seed))
 
-    rows.sort(key=lambda m: m["timestamp"])
+    rows.sort(key=lambda m: (m["timestamp"], m["id"]))
     return rows
 
 
 async def _advance_analysis_state(messages: list[dict]) -> None:
-    """Advance per-chat checkpoints to the newest processed timestamp. MAX()
-    guards against rewinding when a manual since=... run touches old history."""
-    latest: dict[tuple[str, str], str] = {}
+    """Advance per-chat checkpoints to the furthest processed (timestamp, id).
+    A read-compare-write guard skips rewinds so a manual since=/full run over
+    old history can't drag the incremental cursor backwards. Analyze is
+    single-flight (is_task_running), so there's no concurrent writer to race."""
+    latest: dict[tuple[str, str], tuple[str, int]] = {}
     for m in messages:
         key = (m.get("platform") or "", m["chat_id"])
-        ts = m["timestamp"]
-        if key not in latest or ts > latest[key]:
-            latest[key] = ts
+        cur = (m["timestamp"], int(m["id"]))
+        if key not in latest or cur > latest[key]:
+            latest[key] = cur
 
     async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         await db.execute("PRAGMA busy_timeout=30000")
-        for (platform, chat_id), ts in latest.items():
+        db.row_factory = aiosqlite.Row
+        for (platform, chat_id), (ts, mid) in latest.items():
+            existing = await db.execute_fetchall(
+                "SELECT last_analyzed_ts, last_analyzed_id FROM analysis_state WHERE platform=? AND chat_id=?",
+                (platform, chat_id),
+            )
+            if existing:
+                old = (existing[0]["last_analyzed_ts"] or "", existing[0]["last_analyzed_id"] or 0)
+                if (ts, mid) <= old:
+                    continue  # never rewind
             await db.execute(
-                """INSERT INTO analysis_state (platform, chat_id, last_analyzed_ts, updated_at)
-                   VALUES (?,?,?,CURRENT_TIMESTAMP)
+                """INSERT INTO analysis_state (platform, chat_id, last_analyzed_ts, last_analyzed_id, updated_at)
+                   VALUES (?,?,?,?,CURRENT_TIMESTAMP)
                    ON CONFLICT(platform, chat_id) DO UPDATE SET
-                       last_analyzed_ts = MAX(COALESCE(analysis_state.last_analyzed_ts, ''), excluded.last_analyzed_ts),
+                       last_analyzed_ts = excluded.last_analyzed_ts,
+                       last_analyzed_id = excluded.last_analyzed_id,
                        updated_at = CURRENT_TIMESTAMP""",
-                (platform, chat_id, ts),
+                (platform, chat_id, ts, mid),
             )
         await db.commit()
 

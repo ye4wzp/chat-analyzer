@@ -5,7 +5,21 @@ import hashlib
 
 import aiosqlite
 
+from app.core.config import load_config
 from app.core.time_utils import normalize_timestamp
+
+
+def current_account(platform: str) -> str:
+    """Label of the user's own account on `platform`, stamped onto new rows so
+    the 多号 switch can tell accounts apart. '' = unlabeled/default account."""
+    cfg = load_config()
+    if platform == "wechat":
+        return cfg.wechat.account.strip()
+    if platform == "qq":
+        return cfg.qq.uin.strip()
+    if platform == "telegram":
+        return (cfg.telegram.username or "").strip()
+    return ""
 
 
 def parse_ts(value: str | int | float | None) -> str | None:
@@ -35,17 +49,19 @@ async def upsert_message(
     timestamp: str,
     src_id: str,
     raw: object,
+    account: str = "",
 ) -> int:
     """Insert one message; rows already present are ignored. Returns 0 or 1."""
     cursor = await db.execute(
         """INSERT OR IGNORE INTO messages
            (platform, chat_id, chat_name, chat_type, sender_id, sender_name,
-            content, msg_type, timestamp, source_id, raw_data)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            content, msg_type, timestamp, source_id, raw_data, account)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             platform, chat_id, chat_name, chat_type,
             sender_id, sender_name, content, msg_type, timestamp,
             src_id, json.dumps(raw, ensure_ascii=False, default=str),
+            account or None,
         ),
     )
     return max(cursor.rowcount, 0)

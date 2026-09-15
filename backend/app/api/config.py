@@ -52,6 +52,10 @@ async def update_config(body: ConfigUpdate):
         cfg.budget_action = body.budget_action
     if body.vip_contacts is not None:
         cfg.vip_contacts = body.vip_contacts
+    if body.wechat_account is not None:
+        cfg.wechat.account = body.wechat_account.strip()
+    if body.self_names is not None:
+        cfg.self_names = [n.strip() for n in body.self_names if n.strip()]
     if body.llm_provider:
         cfg.llm.provider = body.llm_provider
     if body.llm_api_url is not None:

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Activity, ArrowRight, FileText, MessageSquare, RefreshCw, Sparkles, Users } from "lucide-react"
+import { Activity, ArrowRight, BarChart3, FileText, MessageSquare, RefreshCw, Sparkles, Users } from "lucide-react"
 import { fetchAPI, type ChatInfo, type DashboardStats, type KnowledgeItem, type TokenUsage } from "@/lib/api"
 import { PLATFORM_COLOR, PLATFORM_LABEL } from "@/lib/constants"
 import { formatTime } from "@/lib/utils"
@@ -21,7 +21,9 @@ function pivotDaily(rows: { date: string; platform: string; count: number }[]) {
   for (let i = 13; i >= 0; i--) {
     const d = new Date(end)
     d.setDate(d.getDate() - i)
-    const key = d.toISOString().slice(0, 10)
+    // Local date key — the backend groups by local date, so toISOString() (UTC)
+    // would shift the window and drop "today" for the first hours of local time.
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
     const row = map.get(key) || { date: key }
     for (const p of platforms) if (row[p] === undefined) row[p] = 0
     out.push(row)
@@ -264,9 +266,19 @@ export default function Dashboard() {
           <h1 className="text-2xl font-semibold tracking-tight">首页仪表盘</h1>
           <p className="mt-1 text-sm text-[var(--color-muted-foreground)]">多平台消息、提醒与知识沉淀的今日概览</p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-[var(--color-muted-foreground)]">
-          更新于 {new Date().toLocaleString()}
-          <RefreshCw className="h-3.5 w-3.5" />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate("/overview")}
+            className="flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--color-accent)]"
+          >
+            <BarChart3 className="h-3.5 w-3.5" />
+            完整数据概览
+            <ArrowRight className="h-3 w-3" />
+          </button>
+          <span className="flex items-center gap-2 text-xs text-[var(--color-muted-foreground)]">
+            更新于 {new Date().toLocaleString()}
+            <RefreshCw className="h-3.5 w-3.5" />
+          </span>
         </div>
       </header>
 

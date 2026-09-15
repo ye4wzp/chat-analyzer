@@ -21,6 +21,7 @@ from telethon.tl.types import User
 from app.core.config import load_config, save_config
 from app.core.database import DB_PATH
 from app.services.sync._common import (
+    current_account,
     parse_ts,
     read_sync_state,
     source_id,
@@ -357,6 +358,7 @@ async def sync_all(progress: ProgressCB | None = None) -> dict[str, int]:
 
     total_imported = 0
     chats_done = 0
+    account = current_account("telegram")
 
     async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
         await db.execute("PRAGMA busy_timeout=30000")
@@ -415,6 +417,7 @@ async def sync_all(progress: ProgressCB | None = None) -> dict[str, int]:
                         timestamp=ts,
                         src_id=source_id(msg.id, chat_id, ts, sender_name, text),
                         raw=raw,
+                        account=account,
                     )
                     if msg.id > max_seen:
                         max_seen = msg.id

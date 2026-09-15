@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { Archive, BookOpen, Check, ClipboardCheck, Clock3, Cpu, Download, FileText, Inbox, Loader2, Pencil, Search, Sparkles, Trash2, Undo2, X } from "lucide-react"
-import { fetchAPI, getErrorMessage, type KnowledgeBatch, type KnowledgeItem, type PendingBatch, type PendingKnowledge } from "@/lib/api"
+import { apiDownloadUrl, fetchAPI, getErrorMessage, type DashboardStats, type KnowledgeBatch, type KnowledgeItem, type PendingBatch, type PendingKnowledge } from "@/lib/api"
 import { formatTime, parseTime } from "@/lib/utils"
 import { useTaskRunner } from "@/hooks/useTaskRunner"
 import { KnowledgeReviewModal } from "@/components/KnowledgeReviewModal"
@@ -208,27 +208,60 @@ export default function Knowledge() {
   const [pendingBatches, setPendingBatches] = useState<PendingBatch[]>([])
   const [savedBatches, setSavedBatches] = useState<KnowledgeBatch[]>([])
   const [review, setReview] = useState<{ taskId: string; results: PendingKnowledge[]; summary: string } | null>(null)
+  const [total, setTotal] = useState(0)      // global count from /dashboard, not the loaded page
+  const [hasMore, setHasMore] = useState(false)
   const { run: runTask, running } = useTaskRunner()
   const embedding = running.has("embed")
 
-  const load = useCallback(async (query = "", searchMode: "keyword" | "semantic" = mode) => {
+  const PAGE = 100
+  const offsetRef = useRef(0)
+  const reqRef = useRef(0)
+  // Query/mode actually executed — pagination reads these so a mode toggle or
+  // typing in the box can't change what "加载更多" appends.
+  const queryRef = useRef("")
+  const modeRef = useRef<"keyword" | "semantic">("keyword")
+
+  const load = useCallback(async (append = false) => {
+    const reqId = ++reqRef.current
     setLoading(true)
     try {
+      const query = queryRef.current
       const params = new URLSearchParams()
       if (query) params.set("q", query)
-      if (query && searchMode === "semantic") params.set("mode", "semantic")
+      if (query && modeRef.current === "semantic") params.set("mode", "semantic")
+      params.set("limit", String(PAGE))
+      params.set("offset", String(append ? offsetRef.current : 0))
       const data = await fetchAPI<KnowledgeItem[]>(`/knowledge?${params}`)
-      setItems(data)
-      setSelected(prev => {
-        if (prev && data.some(i => i.id === prev.id)) return data.find(i => i.id === prev.id) ?? prev
-        return data[0] ?? null
-      })
+      if (reqId !== reqRef.current) return  // superseded
+      offsetRef.current = (append ? offsetRef.current : 0) + data.length
+      setHasMore(data.length === PAGE)
+      setItems(prev => (append ? [...prev, ...data] : data))
+      if (!append) {
+        setSelected(prev => {
+          if (prev && data.some(i => i.id === prev.id)) return data.find(i => i.id === prev.id) ?? prev
+          return data[0] ?? null
+        })
+      }
     } catch (e) {
-      toast.error(getErrorMessage(e))
+      if (reqId === reqRef.current) toast.error(getErrorMessage(e))
     } finally {
-      setLoading(false)
+      if (reqId === reqRef.current) setLoading(false)
     }
-  }, [mode])
+  }, [])
+
+  // Run the search currently in the box, resetting pagination.
+  const runSearch = useCallback(() => {
+    queryRef.current = q.trim()
+    modeRef.current = mode
+    void load(false)
+  }, [q, mode, load])
+
+  const refreshTotal = useCallback(async () => {
+    try {
+      const stats = await fetchAPI<DashboardStats>("/dashboard")
+      setTotal(stats.total_knowledge)
+    } catch { /* non-critical */ }
+  }, [])
 
   const refreshEmbedStatus = async () => {
     try {
@@ -250,10 +283,11 @@ export default function Knowledge() {
 
   useEffect(() => {
     void load()
+    void refreshTotal()
     void refreshEmbedStatus()
     void refreshPending()
     void refreshSavedBatches()
-  }, [load, refreshPending, refreshSavedBatches])
+  }, [load, refreshTotal, refreshPending, refreshSavedBatches])
 
   const openReview = async (b: PendingBatch) => {
     try {
@@ -279,7 +313,8 @@ export default function Knowledge() {
     setReview(null)
     void refreshPending()
     void refreshSavedBatches()
-    void load(q)
+    void refreshTotal()
+    void load(false)
   }
 
   const undoBatch = async (b: KnowledgeBatch) => {
@@ -288,7 +323,8 @@ export default function Knowledge() {
       await fetchAPI(`/knowledge/batch/${encodeURIComponent(b.batch_id)}`, { method: "DELETE" })
       setSavedBatches(prev => prev.filter(x => x.batch_id !== b.batch_id))
       toast.success("已撤销该批次")
-      void load(q)
+      void refreshTotal()
+      void load(false)
     } catch (e) {
       toast.error(getErrorMessage(e))
     }
@@ -332,13 +368,22 @@ export default function Knowledge() {
         setSelected(next[0] ?? null)
         return next
       })
+      setTotal(t => Math.max(0, t - 1))
     } catch (e) {
       toast.error(getErrorMessage(e))
     }
   }
 
+  const switchMode = (m: "keyword" | "semantic") => {
+    setMode(m)
+    // Re-run the executed query under the new mode instead of wiping results.
+    if (queryRef.current) { modeRef.current = m; void load(false) }
+  }
+
   const exportMd = () => {
-    window.open("/api/knowledge/export?fmt=markdown", "_blank")
+    // window.open can't set headers — carry the token as a query param so export
+    // works when api_token is configured (LAN mode).
+    window.open(apiDownloadUrl("/knowledge/export?fmt=markdown"), "_blank")
   }
 
   const startEmbed = () => runTask({
@@ -365,15 +410,15 @@ export default function Knowledge() {
                 value={q}
                 onChange={e => setQ(e.target.value)}
                 onKeyDown={e => {
-                  if (e.key === "Enter") void load(q)
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) runSearch()
                 }}
               />
             </div>
             <div className="flex overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-background)] text-xs shadow-sm">
-              <button onClick={() => setMode("keyword")} className={`px-3 ${mode === "keyword" ? "bg-[var(--color-accent)] text-[var(--color-primary)]" : "text-[var(--color-muted-foreground)]"}`}>关键词</button>
-              <button onClick={() => setMode("semantic")} disabled={!embedStatus?.model} className={`px-3 disabled:opacity-40 ${mode === "semantic" ? "bg-[var(--color-accent)] text-[var(--color-primary)]" : "text-[var(--color-muted-foreground)]"}`}>语义</button>
+              <button onClick={() => switchMode("keyword")} className={`px-3 ${mode === "keyword" ? "bg-[var(--color-accent)] text-[var(--color-primary)]" : "text-[var(--color-muted-foreground)]"}`}>关键词</button>
+              <button onClick={() => switchMode("semantic")} disabled={!embedStatus?.model} className={`px-3 disabled:opacity-40 ${mode === "semantic" ? "bg-[var(--color-accent)] text-[var(--color-primary)]" : "text-[var(--color-muted-foreground)]"}`}>语义</button>
             </div>
-            <Button variant="outline" size="sm" onClick={() => void load(q)}>搜索</Button>
+            <Button variant="outline" size="sm" onClick={runSearch}>搜索</Button>
             <Button variant="outline" size="sm" onClick={exportMd}><Download className="mr-1.5 h-3.5 w-3.5" />导出</Button>
             {embedStatus?.model && (
               <Button
@@ -392,7 +437,7 @@ export default function Knowledge() {
           <MetricCard label="今日新增" value={String(todayCount)} icon={FileText} tone="var(--color-success)" />
           <MetricCard label="本周新增" value={String(weekCount)} icon={Clock3} tone="var(--color-warning)" />
           <MetricCard label="标签数" value={String(allTags.length)} icon={Archive} tone="var(--chart-6)" />
-          <MetricCard label="知识总数" value={items.length.toLocaleString()} icon={BookOpen} tone="var(--color-primary)" />
+          <MetricCard label="知识总数" value={total.toLocaleString()} icon={BookOpen} tone="var(--color-primary)" />
           <div className="hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm xl:block">
             <div className="mb-3 flex items-center justify-between">
               <p className="text-sm text-[var(--color-muted-foreground)]">热门标签</p>
@@ -526,6 +571,11 @@ export default function Knowledge() {
                 </button>
               )
             })}
+            {hasMore && !loading && (
+              <div className="flex justify-center py-4">
+                <Button variant="outline" size="sm" onClick={() => void load(true)}>加载更多</Button>
+              </div>
+            )}
           </div>
         </main>
 

@@ -118,22 +118,27 @@ async def related_items(item_id: int, limit: int = 3):
     """Top-K similar knowledge_items by embedding cosine. Returns [] if the
     target itself isn't embedded yet (UI shows nothing rather than misleading
     keyword fallback)."""
+    from app.core.config import load_config
     from app.services.embedder import deserialize_vec, rank_by_similarity
 
+    model = load_config().llm.embedding_model
     async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         target_rows = await db.execute_fetchall(
-            "SELECT embedding FROM knowledge_items WHERE id=?", (item_id,)
+            "SELECT embedding, embedding_model FROM knowledge_items WHERE id=?", (item_id,)
         )
         if not target_rows:
             raise HTTPException(404, "知识点不存在")
         blob = target_rows[0]["embedding"]
-        if not blob:
+        # Only rank against vectors from the SAME model — mixing models of equal
+        # dimension yields meaningless cosine scores.
+        if not blob or target_rows[0]["embedding_model"] != model:
             return []
 
         candidates = await db.execute_fetchall(
-            "SELECT id, embedding FROM knowledge_items WHERE id <> ? AND embedding IS NOT NULL",
-            (item_id,),
+            "SELECT id, embedding FROM knowledge_items"
+            " WHERE id <> ? AND embedding IS NOT NULL AND embedding_model = ?",
+            (item_id, model),
         )
         ranked = rank_by_similarity(deserialize_vec(blob), [r["embedding"] for r in candidates], limit)
         by_id = await _fetch_items_by_ids(db, [candidates[i]["id"] for i, _ in ranked])
@@ -165,12 +170,18 @@ async def list_knowledge(
         db.row_factory = aiosqlite.Row
 
         if q and mode == "semantic":
+            from app.core.config import load_config
             from app.services.embedder import embed_text, rank_by_similarity
+            model = load_config().llm.embedding_model
             query_vec = await embed_text(q)
             if not query_vec:
                 return []
+            # Same-model only: the query vector is fresh from the current model,
+            # so candidates from a different (stale) model must be excluded.
             candidates = await db.execute_fetchall(
-                "SELECT id, embedding FROM knowledge_items WHERE embedding IS NOT NULL"
+                "SELECT id, embedding FROM knowledge_items"
+                " WHERE embedding IS NOT NULL AND embedding_model = ?",
+                (model,),
             )
             ranked = rank_by_similarity(query_vec, [r["embedding"] for r in candidates], offset + limit)
             page = ranked[offset : offset + limit]

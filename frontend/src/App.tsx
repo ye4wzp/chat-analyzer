@@ -4,6 +4,16 @@ import Layout from "@/pages/Layout"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
 
 const Dashboard = lazy(() => import("@/pages/Dashboard"))
+const Overview = lazy(() => import("@/pages/Overview"))
+const Contacts = lazy(() => import("@/pages/Contacts"))
+const Members = lazy(() => import("@/pages/Members"))
+const Calendar = lazy(() => import("@/pages/Calendar"))
+const Yearly = lazy(() => import("@/pages/Yearly"))
+const Resources = lazy(() => import("@/pages/Resources"))
+const Mentions = lazy(() => import("@/pages/Mentions"))
+const Payments = lazy(() => import("@/pages/Payments"))
+const Ask = lazy(() => import("@/pages/Ask"))
+const Reports = lazy(() => import("@/pages/Reports"))
 const Chats = lazy(() => import("@/pages/Chats"))
 const Timeline = lazy(() => import("@/pages/Timeline"))
 const Search = lazy(() => import("@/pages/Search"))
@@ -28,6 +38,16 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Suspense fallback={<PageFallback />}><Dashboard /></Suspense>} />
+            <Route path="overview" element={<Suspense fallback={<PageFallback />}><Overview /></Suspense>} />
+            <Route path="contacts" element={<Suspense fallback={<PageFallback />}><Contacts /></Suspense>} />
+            <Route path="members" element={<Suspense fallback={<PageFallback />}><Members /></Suspense>} />
+            <Route path="calendar" element={<Suspense fallback={<PageFallback />}><Calendar /></Suspense>} />
+            <Route path="yearly" element={<Suspense fallback={<PageFallback />}><Yearly /></Suspense>} />
+            <Route path="resources" element={<Suspense fallback={<PageFallback />}><Resources /></Suspense>} />
+            <Route path="mentions" element={<Suspense fallback={<PageFallback />}><Mentions /></Suspense>} />
+            <Route path="payments" element={<Suspense fallback={<PageFallback />}><Payments /></Suspense>} />
+            <Route path="ask" element={<Suspense fallback={<PageFallback />}><Ask /></Suspense>} />
+            <Route path="reports" element={<Suspense fallback={<PageFallback />}><Reports /></Suspense>} />
             <Route path="chats" element={<Suspense fallback={<PageFallback />}><Chats /></Suspense>} />
             <Route path="timeline" element={<Suspense fallback={<PageFallback />}><Timeline /></Suspense>} />
             <Route path="search" element={<Suspense fallback={<PageFallback />}><Search /></Suspense>} />

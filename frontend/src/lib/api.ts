@@ -11,6 +11,16 @@ function sseUrl(path: string): string {
   return `${API_BASE}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
 }
 
+// Build an /api URL carrying the token as a query param — for browser
+// navigations (window.open / <a download>) that can't set the X-API-Token
+// header. No-op when no token is configured.
+export function apiDownloadUrl(path: string): string {
+  const token = apiToken()
+  const url = `${API_BASE}${path}`
+  if (!token) return url
+  return `${url}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`
+}
+
 export async function fetchAPI<T>(path: string, opts?: RequestInit): Promise<T> {
   const token = apiToken()
   const res = await fetch(`${API_BASE}${path}`, {
@@ -189,6 +199,7 @@ export interface Config {
   budget_action: string
   api_token?: string  // "********" when set
   vip_contacts: string[]
+  self_names?: string[]
   keywords?: string[]
   semantic_triggers?: SemanticTrigger[]
   chat_filter: {
@@ -202,6 +213,7 @@ export interface Config {
     api_key: string
     embedding_model?: string
   }
+  wechat?: { account: string }
   qq: QQConfig
   telegram: TelegramConfig
 }
@@ -317,6 +329,45 @@ export interface TaskState {
   summary?: string
 }
 
+export interface AskSource {
+  ref: number
+  message_id: number
+  platform: string
+  chat_id: string
+  chat_name: string | null
+  sender_name: string | null
+  timestamp: string
+  preview: string
+  content: string
+}
+
+export interface AskKnowledgeSource {
+  ref: string
+  id: number
+  title: string
+  preview: string
+  similarity: number
+}
+
+export interface AskResponse {
+  answer: string
+  sources: AskSource[]
+  knowledge: AskKnowledgeSource[]
+  keywords: string[]
+}
+
+export interface ReportMeta {
+  id: number
+  period: string  // 'weekly' | 'monthly'
+  period_start: string
+  period_end: string
+  created_at: string
+}
+
+export interface Report extends ReportMeta {
+  content: string
+}
+
 export interface SchedulerStatus {
   sync_enabled: boolean
   sync_interval_minutes: number
@@ -344,6 +395,12 @@ export interface SchedulerStatus {
   todo_remind_min_urgency: number
   last_todo_remind_at: string | null
   next_todo_remind_at: string | null
+  report_weekly_enabled: boolean
+  last_report_weekly_at: string | null
+  next_report_weekly_at: string | null
+  report_monthly_enabled: boolean
+  last_report_monthly_at: string | null
+  next_report_monthly_at: string | null
 }
 
 export interface TelegramStatus {
@@ -467,6 +524,212 @@ export interface TodoStats {
   total: number
   open: number
   urgent: number
+}
+
+/* ---------------------------------------------------------------------- */
+/* Pre-aggregated statistics (/api/stats/*)                                 */
+/* ---------------------------------------------------------------------- */
+
+export interface StatsStatus {
+  ready: boolean
+  version_ok: boolean
+  stale: boolean
+  last_message_id: number
+  max_message_id: number
+  behind: number
+  built_at: string | null
+  running: boolean
+}
+
+export interface StatsAccount {
+  platform: string
+  account: string
+  messages: number
+  chats: number
+}
+
+export interface KindCount { kind: string; label: string; count: number }
+export interface MonthCount { month: string; count: number }
+export interface DayCount { day: string; count: number }
+
+export interface TopChat {
+  platform: string
+  chat_id: string
+  chat_name: string | null
+  chat_type: string | null
+  account: string
+  count: number
+  last_ts: string | null
+}
+
+export interface StatsOverview {
+  totals: {
+    messages: number
+    chats: number
+    groups: number
+    privates: number
+    active_months: number
+    first_ts: string | null
+    last_ts: string | null
+  }
+  monthly: MonthCount[]
+  hourly: number[]
+  weekday: number[]
+  kinds: KindCount[]
+  platforms: { platform: string; count: number; chats: number }[]
+  top_chats: TopChat[]
+}
+
+export interface StatsCalendar {
+  year: number | null
+  years: number[]
+  days: DayCount[]
+  total: number
+  active_days: number
+  peak: DayCount | null
+}
+
+export interface YearlyChat {
+  platform: string
+  chat_id: string
+  chat_name: string | null
+  chat_type: string | null
+  count: number
+  active_days: number
+}
+
+export interface StatsYearly {
+  year: number | null
+  years: number[]
+  totals: {
+    messages: number
+    prev_messages: number
+    delta_pct: number | null
+    active_days: number
+    avg_per_active_day: number
+    chats: number
+    groups: number
+    new_chats: number
+    new_groups: number
+  } | null
+  monthly: MonthCount[]
+  hourly: number[]
+  weekday: number[]
+  kinds: KindCount[]
+  days: DayCount[]
+  peak_day: DayCount | null
+  peak_month: MonthCount | null
+  peak_hour: number | null
+  streak: { days: number; start: string | null; end: string | null }
+  top_chats: YearlyChat[]
+  top_groups: YearlyChat[]
+  top_privates: YearlyChat[]
+  top_speakers: { platform: string; chat_id: string; chat_name: string | null; name: string; count: number }[]
+  resources: Record<string, number>
+}
+
+export interface ChatStats {
+  platform: string
+  chat_id: string
+  chat_name: string | null
+  chat_type: string | null
+  messages: number
+  first_ts: string | null
+  last_ts: string | null
+  distinct_senders: number
+  monthly: MonthCount[]
+  hourly: number[]
+  weekday: number[]
+  kinds: KindCount[]
+  recent_days: DayCount[]
+}
+
+export interface MemberStat {
+  sender_key: string
+  name: string
+  count: number
+  share: number
+  first_ts: string | null
+  last_ts: string | null
+  active_months: number
+  hours: number[]
+  peak_hour: number | null
+  night_ratio: number
+}
+
+export interface MembersResponse {
+  platform: string
+  chat_id: string
+  total_messages: number
+  member_count: number
+  members: MemberStat[]
+  trend: Record<string, string | number>[]
+  trend_keys: { sender_key: string; name: string }[]
+  monthly_active: { month: string; members: number; count: number }[]
+  inactive: { name: string; sender_key: string; count: number; last_ts: string | null }[]
+  inactive_days: number
+}
+
+export interface ContactListItem {
+  platform: string
+  chat_id: string
+  chat_name: string | null
+  chat_type: string | null
+  account: string
+  messages: number
+  first_ts: string | null
+  last_ts: string | null
+  tags: { tag_id: number; name: string; color: string | null }[]
+  canonical_name: string | null
+  is_vip: boolean
+}
+
+export interface ContactProfile {
+  platform: string
+  chat_id: string
+  chat_name: string
+  chat_type: string | null
+  messages: number
+  first_ts: string | null
+  last_ts: string | null
+  active_days: number
+  distinct_senders: number
+  span_days: number | null
+  active_months: number
+  monthly: MonthCount[]
+  hourly: number[]
+  weekday: number[]
+  kinds: KindCount[]
+  senders: { sender_key: string; name: string; count: number; share: number; last_ts: string | null; is_me: boolean; is_contact: boolean }[]
+  tags: ContactTagLink[]
+  canonical_name: string | null
+  aliases: (AliasEntry & { canonical_name: string })[]
+  is_vip: boolean
+  summary: string | null
+  summary_generated_at: string | null
+  knowledge: { id: number; title: string; content: string; tags: string; created_at: string }[]
+  todos: { total: number; open: number }
+  resources: Record<string, number>
+  recent_messages: { id: number; sender_name: string | null; content: string; msg_type: string | null; timestamp: string }[]
+}
+
+export interface ResourceItem {
+  id: number
+  message_id: number
+  platform: string
+  chat_id: string
+  chat_name: string | null
+  sender_name: string | null
+  timestamp: string
+  kind: string
+  url: string | null
+  title: string | null
+}
+
+export interface ResourcesResponse {
+  items: ResourceItem[]
+  has_more: boolean
+  counts: Record<string, number>
 }
 
 export function getErrorMessage(error: unknown): string {

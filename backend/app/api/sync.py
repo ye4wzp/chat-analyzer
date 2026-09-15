@@ -35,8 +35,16 @@ async def sync_health(stale_days: int = 7):
     return {"platforms": [dict(r) for r in platforms], "stale": [dict(r) for r in stale]}
 
 
+SYNC_TASK_TYPES = ("sync_all", "sync_wechat", "sync_qq", "sync_telegram")
+
+
 @router.post("/api/sync/wechat")
 async def sync_wechat(body: SyncRequest = SyncRequest()):
+    # Syncs never run concurrently (SQLite write contention) — same guard as
+    # /sync/all, so a double-click or an overlapping sync 409s instead of
+    # spawning a second wx-cli writer.
+    if any(is_task_running(t) for t in SYNC_TASK_TYPES):
+        raise HTTPException(409, "同步任务正在运行")
     task_id = create_task("sync_wechat")
     spawn_cancellable(task_id, run_sync(task_id, body.new_only))
     return {"task_id": task_id}
@@ -46,8 +54,7 @@ async def sync_wechat(body: SyncRequest = SyncRequest()):
 async def sync_all(body: SyncRequest = SyncRequest()):
     """Trigger WeChat + QQ + Telegram sync sequentially in a single task.
     This avoids database-locked errors from concurrent writes to SQLite."""
-    running_types = ("sync_all", "sync_wechat", "sync_qq", "sync_telegram")
-    if any(is_task_running(t) for t in running_types):
+    if any(is_task_running(t) for t in SYNC_TASK_TYPES):
         raise HTTPException(409, "同步任务正在运行")
     task_id = create_task("sync_all")
     spawn_cancellable(task_id, _run_sync_all(task_id, body.new_only))
@@ -89,7 +96,10 @@ async def _run_sync_all(task_id: str, new_only: bool):
         from app.services.sync.qq_qce import sync_all as qq_sync
         from app.core.tasks import make_progress as _mp
         r = await qq_sync(progress=_mp(task_id))
-        results.append(f"QQ +{r['imported']}")
+        qq_skipped = r.get("skipped") or []
+        if qq_skipped and not r["chats"]:
+            raise RuntimeError(f"{len(qq_skipped)} 个聊天全部失败: {'、'.join(qq_skipped[:3])}")
+        results.append(f"QQ +{r['imported']}" + (f"（跳过 {len(qq_skipped)}）" if qq_skipped else ""))
         successes += 1
     except Exception as e:
         msg = f"QQ失败: {e}"

@@ -18,3 +18,5 @@ class SchedulerUpdate(BaseModel):
     todo_remind_enabled: Optional[bool] = None
     todo_remind_interval_minutes: Optional[int] = None
     todo_remind_min_urgency: Optional[int] = None
+    report_weekly_enabled: Optional[bool] = None
+    report_monthly_enabled: Optional[bool] = None

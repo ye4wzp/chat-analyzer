@@ -8,6 +8,10 @@ import aiosqlite
 from app.core.database import get_db, DB_PATH
 from app.core.config import ensure_dirs
 from app.core.time_utils import normalize_timestamp
+from app.services.sync._common import current_account
+
+
+WX_TIMEOUT = 300  # seconds; a hung wx-cli IPC must not pin the sync task forever
 
 
 async def _run_wx(*args: str) -> str:
@@ -17,10 +21,23 @@ async def _run_wx(*args: str) -> str:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=WX_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"wx {' '.join(args)} timed out after {WX_TIMEOUT}s")
     if proc.returncode != 0:
         raise RuntimeError(f"wx {' '.join(args)} failed: {stderr.decode()}")
     return stdout.decode()
+
+
+def _rows(raw: str, key: str) -> list[dict]:
+    """新版 wx-cli 把结果包成 {meta, <key>: [...]}；旧版直接返回数组。两种都吃。"""
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        data = data.get(key)
+    return data if isinstance(data, list) else []
 
 
 def _parse_ts(ts_str: str | int | None) -> str | None:
@@ -39,12 +56,15 @@ def _source_id(msg: dict, chat_id: str, ts: str, content: str) -> str:
 async def sync_sessions() -> int:
     """Sync recent sessions from wx-cli. Returns count of new messages."""
     raw = await _run_wx("sessions", "-n", "500")
-    sessions = json.loads(raw)
+    sessions = _rows(raw, "sessions")
     if not sessions:
         return 0
 
     ensure_dirs()
     total = 0
+    attempted = 0
+    failed = 0
+    last_error = ""
 
     for session in sessions:
         chat_name = session.get("chat") or session.get("name") or session.get("nickname") or ""
@@ -53,6 +73,7 @@ async def sync_sessions() -> int:
         if not chat_id:
             continue
 
+        attempted += 1
         # Each chat gets its own short-lived connection to minimize lock hold time.
         # Retry on database-locked errors since parallel syncs may be writing.
         retries = 3
@@ -75,7 +96,14 @@ async def sync_sessions() -> int:
                     continue
                 import logging
                 logging.warning("wechat sync failed for %s: %s", chat_name or chat_id, e)
+                failed += 1
+                last_error = str(e)
                 break
+
+    # Every chat failing means a real fault (wx-cli output changed, IPC down) —
+    # don't let it masquerade as "同步完成，新增 0 条消息".
+    if attempted and failed == attempted:
+        raise RuntimeError(f"微信同步失败：{attempted} 个会话全部出错，最后错误：{last_error}")
 
     return total
 
@@ -91,6 +119,7 @@ async def _sync_chat_history(
     )
     row = await cursor.fetchone()
     since_ts = row[0] if row else None
+    account = current_account("wechat")
 
     total_inserted = 0
     offset = 0
@@ -106,7 +135,7 @@ async def _sync_chat_history(
         except RuntimeError:
             break
 
-        messages = json.loads(raw)
+        messages = _rows(raw, "messages")
         if not messages:
             break
 
@@ -120,8 +149,8 @@ async def _sync_chat_history(
             cursor = await db.execute(
                 """INSERT OR IGNORE INTO messages
                    (platform, chat_id, chat_name, chat_type, sender_id, sender_name,
-                    content, msg_type, timestamp, source_id, raw_data)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    content, msg_type, timestamp, source_id, raw_data, account)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     "wechat",
                     chat_id,
@@ -134,6 +163,7 @@ async def _sync_chat_history(
                     ts,
                     _source_id(msg, chat_id, ts, content),
                     json.dumps(msg, ensure_ascii=False),
+                    account or None,
                 ),
             )
             batch_inserted += max(cursor.rowcount, 0)
@@ -149,9 +179,15 @@ async def _sync_chat_history(
         offset += batch_size
 
     if last_ts:
+        # DO UPDATE (not REPLACE) so last_msg_id / backfill_page survive; only
+        # advance the watermark, never rewind it.
         await db.execute(
-            """INSERT OR REPLACE INTO sync_state (platform, chat_id, last_timestamp, updated_at)
-               VALUES ('wechat', ?, ?, CURRENT_TIMESTAMP)""",
+            """INSERT INTO sync_state (platform, chat_id, last_timestamp, updated_at)
+               VALUES ('wechat', ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(platform, chat_id) DO UPDATE SET
+                 last_timestamp=MAX(excluded.last_timestamp,
+                                    COALESCE(sync_state.last_timestamp, excluded.last_timestamp)),
+                 updated_at=CURRENT_TIMESTAMP""",
             (chat_id, last_ts),
         )
 
@@ -165,12 +201,14 @@ async def sync_new_messages() -> int:
     except RuntimeError:
         return 0
 
-    messages = json.loads(raw)
+    messages = _rows(raw, "messages")
     if not messages:
         return 0
 
     ensure_dirs()
     inserted = 0
+    latest: dict[str, str] = {}
+    account = current_account("wechat")
 
     retries = 3
     for attempt in range(retries):
@@ -190,8 +228,8 @@ async def sync_new_messages() -> int:
                     cursor = await db.execute(
                         """INSERT OR IGNORE INTO messages
                            (platform, chat_id, chat_name, chat_type, sender_id, sender_name,
-                            content, msg_type, timestamp, source_id, raw_data)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                            content, msg_type, timestamp, source_id, raw_data, account)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             "wechat",
                             chat_id,
@@ -204,9 +242,25 @@ async def sync_new_messages() -> int:
                             ts,
                             _source_id(msg, chat_id, ts, content),
                             json.dumps(msg, ensure_ascii=False),
+                            account or None,
                         ),
                     )
                     inserted += max(cursor.rowcount, 0)
+                    if ts > latest.get(chat_id, ""):
+                        latest[chat_id] = ts
+
+                # 增量路径也要推进检查点，否则 sync/health 的同步时间永远停在上次全量同步。
+                # 只向前推进：不把全量同步留下的更新的检查点改小。
+                for cid, ts in latest.items():
+                    await db.execute(
+                        """INSERT INTO sync_state (platform, chat_id, last_timestamp, updated_at)
+                           VALUES ('wechat', ?, ?, CURRENT_TIMESTAMP)
+                           ON CONFLICT(platform, chat_id) DO UPDATE SET
+                             last_timestamp=MAX(excluded.last_timestamp,
+                                                COALESCE(sync_state.last_timestamp, excluded.last_timestamp)),
+                             updated_at=CURRENT_TIMESTAMP""",
+                        (cid, ts),
+                    )
 
                 await db.commit()
             break  # success
@@ -217,6 +271,7 @@ async def sync_new_messages() -> int:
                 logging.warning("wechat sync_new locked, retry %d/%d", attempt + 1, retries)
                 await asyncio.sleep(3 * (attempt + 1))
                 inserted = 0  # reset count for retry
+                latest.clear()
                 continue
             raise
 

@@ -27,6 +27,9 @@ export default function Settings() {
   const [budget, setBudget] = useState("")
   const [action, setAction] = useState("")
   const [vip, setVip] = useState("")
+  const [selfNames, setSelfNames] = useState("")
+  const [wechatAccount, setWechatAccount] = useState("")
+  const [assigning, setAssigning] = useState(false)
   const [keywords, setKeywords] = useState("")
   const [apiToken, setApiToken] = useState("")
   const [triggers, setTriggers] = useState<SemanticTrigger[]>([])
@@ -48,6 +51,8 @@ export default function Settings() {
   const [tagInterval, setTagInterval] = useState(360)
   const [todoRemindEnabled, setTodoRemindEnabled] = useState(false)
   const [todoRemindInterval, setTodoRemindInterval] = useState(1440)
+  const [reportWeeklyEnabled, setReportWeeklyEnabled] = useState(false)
+  const [reportMonthlyEnabled, setReportMonthlyEnabled] = useState(false)
   const [saving, setSaving] = useState(false)
   const [savingScheduler, setSavingScheduler] = useState(false)
 
@@ -58,6 +63,8 @@ export default function Settings() {
         setBudget(String(c.daily_token_budget))
         setAction(c.budget_action)
         setVip(c.vip_contacts.join(", "))
+        setSelfNames((c.self_names || []).join(", "))
+        setWechatAccount(c.wechat?.account || "")
         setKeywords((c.keywords || []).join(", "))
         setApiToken(c.api_token || "")
         setTriggers(c.semantic_triggers || [])
@@ -77,7 +84,11 @@ export default function Settings() {
         setAnalyzeEnabled(s.analyze_enabled); setAnalyzeInterval(s.analyze_interval_minutes)
         setTagEnabled(s.tag_enabled); setTagInterval(s.tag_interval_minutes)
         setTodoRemindEnabled(s.todo_remind_enabled); setTodoRemindInterval(s.todo_remind_interval_minutes)
+        setReportWeeklyEnabled(s.report_weekly_enabled); setReportMonthlyEnabled(s.report_monthly_enabled)
       })
+      // Without this, a failed load silently leaves every toggle at its OFF
+      // default — and saving would then disable all scheduled jobs unnoticed.
+      .catch(e => toast.error(`定时配置加载失败：${getErrorMessage(e)}`))
   }, [])
 
   const onTabChange = (v: string) => {
@@ -99,6 +110,8 @@ export default function Settings() {
           daily_token_budget: Number(budget),
           budget_action: action,
           vip_contacts: vip.split(",").map(s => s.trim()).filter(Boolean),
+          self_names: selfNames.split(/[,，]/).map(s => s.trim()).filter(Boolean),
+          wechat_account: wechatAccount,
           keywords: keywords.split(",").map(s => s.trim()).filter(Boolean),
           api_token: apiToken,
           semantic_triggers: triggers.filter(t => t.query.trim()),
@@ -137,6 +150,7 @@ export default function Settings() {
           analyze_enabled: analyzeEnabled, analyze_interval_minutes: analyzeInterval,
           tag_enabled: tagEnabled, tag_interval_minutes: tagInterval,
           todo_remind_enabled: todoRemindEnabled, todo_remind_interval_minutes: todoRemindInterval,
+          report_weekly_enabled: reportWeeklyEnabled, report_monthly_enabled: reportMonthlyEnabled,
         }),
       })
       setScheduler(updated)
@@ -184,6 +198,44 @@ export default function Settings() {
             <div className="space-y-1.5">
               <label className="text-sm text-[var(--color-muted-foreground)]">VIP 联系人（逗号分隔）</label>
               <Input value={vip} onChange={e => setVip(e.target.value)} className="max-w-sm" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-[var(--color-muted-foreground)]">
+                我的昵称（逗号分隔）—— 「@消息」页据此找出 @我 的消息；留空则自动推断
+              </label>
+              <Input value={selfNames} onChange={e => setSelfNames(e.target.value)} className="max-w-sm" placeholder="子非鱼, yu yan" />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm text-[var(--color-muted-foreground)]">
+                微信账号标签 —— 有多个微信号时给当前登录的号起个名（如「主号」），新同步的消息会带上它，统计页可按号切换
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input value={wechatAccount} onChange={e => setWechatAccount(e.target.value)} className="max-w-xs" placeholder="主号" />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={assigning || !wechatAccount.trim()}
+                  title="把此前没有标签的微信历史消息归入这个标签，并重建统计。改写期间（微信十万条约几秒）同步会短暂等待。"
+                  onClick={async () => {
+                    if (!confirm(`把所有未标记账号的微信历史消息归入「${wechatAccount.trim()}」？\n\n这会改写历史消息的账号字段并全量重建统计（约半分钟），期间正在进行的同步会短暂等待。`)) return
+                    setAssigning(true)
+                    try {
+                      const r = await fetchAPI<{ updated: number }>("/stats/accounts/assign", {
+                        method: "POST",
+                        body: JSON.stringify({ platform: "wechat", from_account: "", to_account: wechatAccount.trim() }),
+                      })
+                      toast.success(`已归入 ${r.updated.toLocaleString()} 条消息，统计重建中`)
+                    } catch (e) {
+                      toast.error(getErrorMessage(e))
+                    } finally {
+                      setAssigning(false)
+                    }
+                  }}
+                >
+                  {assigning && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}历史消息归入此标签
+                </Button>
+              </div>
             </div>
             <div className="space-y-1.5">
               <label className="text-sm text-[var(--color-muted-foreground)]">
@@ -302,10 +354,21 @@ export default function Settings() {
               lastAt={scheduler?.last_todo_remind_at} nextAt={scheduler?.next_todo_remind_at}
               helper="定期通过系统通知提醒未完成的高紧急度待办"
             />
+            <ReportRow
+              title="自动生成周报" enabled={reportWeeklyEnabled} setEnabled={setReportWeeklyEnabled}
+              lastAt={scheduler?.last_report_weekly_at} nextAt={scheduler?.next_report_weekly_at}
+              helper="每 7 天生成一份周报（消息动态、新增知识点、待办、VIP 动态），在「报告」页查看"
+            />
+            <ReportRow
+              title="自动生成月报" enabled={reportMonthlyEnabled} setEnabled={setReportMonthlyEnabled}
+              lastAt={scheduler?.last_report_monthly_at} nextAt={scheduler?.next_report_monthly_at}
+              helper="每 30 天生成一份月报"
+            />
 
-            <Button size="sm" disabled={savingScheduler} onClick={saveScheduler}>
+            <Button size="sm" disabled={savingScheduler || !scheduler} onClick={saveScheduler}>
               {savingScheduler && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}保存定时配置
             </Button>
+            {!scheduler && <p className="text-xs text-[var(--color-destructive)]">定时配置未加载，暂不能保存（避免误关全部任务）</p>}
           </section>
         </TabsContent>
 
@@ -313,6 +376,30 @@ export default function Settings() {
           <BackupsPanel />
         </TabsContent>
       </Tabs>
+    </div>
+  )
+}
+
+function ReportRow({ title, enabled, setEnabled, lastAt, nextAt, helper }: {
+  title: string
+  enabled: boolean
+  setEnabled: (v: boolean) => void
+  lastAt?: string | null
+  nextAt?: string | null
+  helper?: string
+}) {
+  return (
+    <div className="space-y-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+      <div className="flex items-center justify-between">
+        <label className="text-sm font-medium">{title}</label>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} className="accent-[var(--color-primary)]" />
+          {enabled ? "已开启" : "已关闭"}
+        </label>
+      </div>
+      {lastAt && <p className="text-xs text-[var(--color-muted-foreground)]">上次: {formatTime(lastAt)}</p>}
+      {nextAt && enabled && <p className="text-xs text-[var(--color-muted-foreground)]">下次: {formatTime(nextAt)}</p>}
+      {helper && <p className="text-xs text-[var(--color-muted-foreground)]">{helper}</p>}
     </div>
   )
 }

@@ -1,5 +1,5 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom"
-import { LayoutDashboard, MessagesSquare, Settings, Search, RefreshCw, Upload, Sparkles, BookOpen, Clock, Menu, X, Inbox, Play, Tags as TagsIcon, ListChecks, Sun, Moon } from "lucide-react"
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom"
+import { LayoutDashboard, MessagesSquare, Settings, Search, RefreshCw, Upload, Sparkles, BookOpen, Clock, Menu, X, Inbox, Play, ListChecks, Sun, Moon, FileText, BarChart3, Contact, Users, CalendarDays, Link2, AtSign, Gift } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { toast, Toaster } from "sonner"
 import { fetchAPI, getErrorMessage, type SyncHealth } from "@/lib/api"
@@ -12,15 +12,41 @@ import { GlobalTaskBar } from "@/components/GlobalTaskBar"
 import { NotificationBell } from "@/components/NotificationBell"
 import { Sheet, SheetHeader } from "@/components/ui/sheet"
 
-const nav = [
-  { to: "/", label: "首页", icon: LayoutDashboard },
-  { to: "/chats", label: "聊天", icon: MessagesSquare },
-  { to: "/timeline", label: "时间线", icon: Clock },
-  { to: "/inbox", label: "收件箱", icon: Inbox },
-  { to: "/knowledge", label: "知识库", icon: BookOpen },
-  { to: "/tags", label: "标签", icon: TagsIcon },
-  { to: "/todos", label: "待办", icon: ListChecks },
-  { to: "/settings", label: "设置", icon: Settings },
+const navSections: { title?: string; items: { to: string; label: string; icon: typeof LayoutDashboard }[] }[] = [
+  {
+    items: [
+      { to: "/", label: "首页", icon: LayoutDashboard },
+      { to: "/overview", label: "数据概览", icon: BarChart3 },
+      { to: "/ask", label: "AI 问答", icon: Sparkles },
+    ],
+  },
+  {
+    title: "浏览",
+    items: [
+      { to: "/chats", label: "聊天浏览", icon: MessagesSquare },
+      { to: "/timeline", label: "时间线", icon: Clock },
+      { to: "/inbox", label: "收件箱", icon: Inbox },
+      { to: "/mentions", label: "@消息", icon: AtSign },
+      { to: "/resources", label: "资源汇总", icon: Link2 },
+      { to: "/payments", label: "红包转账", icon: Gift },
+    ],
+  },
+  {
+    title: "分析",
+    items: [
+      { to: "/contacts", label: "联系人档案", icon: Contact },
+      { to: "/members", label: "成员分析", icon: Users },
+      { to: "/calendar", label: "日历热图", icon: CalendarDays },
+      { to: "/knowledge", label: "知识库", icon: BookOpen },
+      { to: "/todos", label: "待办", icon: ListChecks },
+      { to: "/reports", label: "报告", icon: FileText },
+    ],
+  },
+  {
+    items: [
+      { to: "/settings", label: "设置", icon: Settings },
+    ],
+  },
 ]
 
 function SyncStatusCard({ onSync }: { onSync: () => void }) {
@@ -77,9 +103,13 @@ function SyncStatusCard({ onSync }: { onSync: () => void }) {
   )
 }
 
+// Pages reachable only via an in-page SubNav; the sidebar keeps their parent lit.
+const SIBLING_OF: Record<string, string> = { "/yearly": "/reports", "/tags": "/contacts" }
+
 function Inner() {
   const { content, close } = useDetailPanel()
   const navigate = useNavigate()
+  const location = useLocation()
   const analyze = useAnalyzeRunner()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -136,48 +166,48 @@ function Inner() {
           <NotificationBell />
         </div>
 
-        <nav className="flex flex-col gap-1 px-3 pt-2">
-          {nav.map(({ to, label, icon: Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === "/"}
-              onClick={() => setSidebarOpen(false)}
-              className={({ isActive }) =>
-                `flex items-center gap-3 rounded-lg px-3.5 py-2.5 text-sm transition-all ${isActive ? "bg-[var(--color-accent)] text-[var(--color-primary)] shadow-sm" : "text-[var(--color-muted-foreground)] hover:bg-[var(--color-card)] hover:text-[var(--color-foreground)]"}`
-              }
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              {label}
-            </NavLink>
+        <nav className="ca-scroll flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pt-1 pb-2">
+          {navSections.map((section, si) => (
+            <div key={si} className={si > 0 ? "mt-2" : ""}>
+              {section.title && (
+                <p className="px-3.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{section.title}</p>
+              )}
+              {section.items.map(({ to, label, icon: Icon }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  end={to === "/"}
+                  onClick={() => setSidebarOpen(false)}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 rounded-lg px-3.5 py-2 text-sm transition-all ${isActive || SIBLING_OF[location.pathname] === to ? "bg-[var(--color-accent)] text-[var(--color-primary)] shadow-sm" : "text-[var(--color-muted-foreground)] hover:bg-[var(--color-card)] hover:text-[var(--color-foreground)]"}`
+                  }
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {label}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
 
-        <div className="mt-auto px-4 pb-4 pt-4 flex flex-col gap-3">
+        <div className="px-4 pb-4 pt-3 flex flex-col gap-3 border-t border-[var(--color-border)]">
           <SyncStatusCard onSync={() => { void runSyncAll() }} />
-          <div className="border-t border-[var(--color-border)] pt-3 flex flex-col gap-1">
-          <button
-            onClick={() => { void runSyncAll() }}
-            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors text-left text-[var(--color-muted-foreground)] hover:bg-[var(--color-card)] hover:text-[var(--color-foreground)]"
-          >
-            <RefreshCw className="h-4 w-4 shrink-0" />
-            同步全部
-          </button>
-          <button
-            onClick={() => { navigate("/settings?tab=sources"); setSidebarOpen(false) }}
-            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors text-left text-[var(--color-muted-foreground)] hover:bg-[var(--color-card)] hover:text-[var(--color-foreground)]"
-          >
-            <Upload className="h-4 w-4 shrink-0" />
-            数据源
-          </button>
-          <button
-            onClick={() => { void analyze.run() }}
-            disabled={analyze.running}
-            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors text-left text-[var(--color-muted-foreground)] hover:bg-[var(--color-card)] hover:text-[var(--color-foreground)] disabled:opacity-50 disabled:pointer-events-none"
-          >
-            <Sparkles className="h-4 w-4 shrink-0" />
-            运行分析
-          </button>
+          <div className="grid grid-cols-2 gap-1">
+            <button
+              onClick={() => { navigate("/settings?tab=sources"); setSidebarOpen(false) }}
+              className="flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-colors text-[var(--color-muted-foreground)] hover:bg-[var(--color-card)] hover:text-[var(--color-foreground)]"
+            >
+              <Upload className="h-3.5 w-3.5 shrink-0" />
+              数据源
+            </button>
+            <button
+              onClick={() => { void analyze.run() }}
+              disabled={analyze.running}
+              className="flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs transition-colors text-[var(--color-muted-foreground)] hover:bg-[var(--color-card)] hover:text-[var(--color-foreground)] disabled:opacity-50 disabled:pointer-events-none"
+            >
+              <Sparkles className="h-3.5 w-3.5 shrink-0" />
+              运行分析
+            </button>
           </div>
         </div>
       </aside>

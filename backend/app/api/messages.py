@@ -8,6 +8,15 @@ from app.core.time_utils import add_time_filters
 
 router = APIRouter()
 
+# Explicit column list — never ship raw_data (full per-message sync JSON) or
+# created_at to the client; the frontend Message type uses neither. source_id
+# is kept: it's small and identifies a message across syncs.
+_MSG_COLS = (
+    "m.id, m.platform, m.chat_id, m.chat_name, m.chat_type, m.sender_id, "
+    "m.sender_name, m.content, m.msg_type, m.timestamp, m.source_id"
+)
+MAX_PAGE = 500
+
 
 @router.get("/api/messages")
 async def get_messages(
@@ -42,11 +51,12 @@ async def get_messages(
         params.append(urgency_min)
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    limit = max(1, min(limit, MAX_PAGE))
 
     async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall(
-            f"""SELECT m.*, a.category, a.urgency, a.summary
+            f"""SELECT {_MSG_COLS}, a.category, a.urgency, a.summary
                 FROM messages m
                 LEFT JOIN analysis_results a ON a.message_id = m.id
                 {where}

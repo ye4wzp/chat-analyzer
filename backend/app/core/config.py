@@ -3,7 +3,9 @@ import os
 from pathlib import Path
 from pydantic import BaseModel
 
-BASE_DIR = Path.home() / ".chat-analyzer"
+# Data lives outside the repo. Override with CHAT_ANALYZER_HOME to move it to
+# another disk / machine (copy the whole directory, then point this at it).
+BASE_DIR = Path(os.environ.get("CHAT_ANALYZER_HOME") or (Path.home() / ".chat-analyzer")).expanduser()
 DATA_DIR = BASE_DIR / "data"
 CONFIG_PATH = BASE_DIR / "config.json"
 
@@ -30,6 +32,13 @@ class LLMConfig(BaseModel):
     model: str = ""
     api_key: str = "lm-studio"
     embedding_model: str = ""                # "" disables semantic features; otherwise OpenAI-compat /v1/embeddings model id
+
+
+class WeChatConfig(BaseModel):
+    """wx-cli reads whichever WeChat is logged in on this Mac and exposes no
+    account identity, so multi-account users label the current one here. The
+    label is stamped onto messages.account and becomes the 主号/多号 switch."""
+    account: str = ""
 
 
 class QQConfig(BaseModel):
@@ -66,6 +75,9 @@ class SchedulerConfig(BaseModel):
     todo_remind_enabled: bool = False
     todo_remind_interval_minutes: int = 1440
     todo_remind_min_urgency: int = 4
+    # Digest reports run on fixed cadences (7d / 30d) — toggles only.
+    report_weekly_enabled: bool = False
+    report_monthly_enabled: bool = False
     # Legacy run stamps (pre scheduler_state table). Read once for migration; never written anymore.
     last_sync_at: str | None = None
     last_analyze_at: str | None = None
@@ -86,11 +98,15 @@ class Config(BaseModel):
     budget_action: str = "pause_and_notify"
     api_token: str = ""  # when set, /api/* requires X-API-Token (or ?token= for SSE)
     vip_contacts: list[str] = []
+    # The user's own display names / nicknames across platforms. Used by the
+    # @消息 page (mentions of me) alongside the auto-inferred identities.
+    self_names: list[str] = []
     keywords: list[str] = []  # case-insensitive (ASCII) substring matches; new keywords backfill on next scan
     semantic_triggers: list[SemanticTrigger] = []
     chat_filter: ChatFilterConfig = ChatFilterConfig()
     pre_filter: PreFilterConfig = PreFilterConfig()
     llm: LLMConfig = LLMConfig()
+    wechat: WeChatConfig = WeChatConfig()
     qq: QQConfig = QQConfig()
     telegram: TelegramConfig = TelegramConfig()
     scheduler: SchedulerConfig = SchedulerConfig()

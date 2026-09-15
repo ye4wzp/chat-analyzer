@@ -6,6 +6,28 @@ from app.core.time_utils import normalize_timestamp
 DB_PATH = DATA_DIR / "chat.db"
 TIMESTAMP_MIGRATION_BATCH_SIZE = 5000
 
+_RESOURCES_DDL = """
+-- Extracted links / files / mini-programs / payments, one row per item.
+CREATE TABLE IF NOT EXISTS resources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    account TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    chat_name TEXT,
+    sender_name TEXT,
+    timestamp TEXT NOT NULL,
+    kind TEXT NOT NULL,              -- 'link' | 'file' | 'miniprogram' | 'redpacket' | 'transfer'
+    url TEXT,
+    title TEXT,
+    -- Dedup key deliberately excludes title: indexing 500k titles doubled the
+    -- table's footprint, and one message yields at most one row per (kind, url).
+    UNIQUE(message_id, kind, url)
+);
+CREATE INDEX IF NOT EXISTS idx_res_kind_ts ON resources(kind, timestamp);
+CREATE INDEX IF NOT EXISTS idx_res_chat_ts ON resources(platform, chat_id, timestamp);
+"""
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,6 +47,10 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_msg_platform_ts ON messages(platform, timestamp);
 CREATE INDEX IF NOT EXISTS idx_msg_chat_ts ON messages(chat_id, timestamp);
+-- Standalone timestamp index for the unfiltered hot paths: the default message
+-- list (ORDER BY timestamp DESC) and the dashboard's N-day window, neither of
+-- which carries a platform/chat prefix to use the composite indexes above.
+CREATE INDEX IF NOT EXISTS idx_msg_ts ON messages(timestamp);
 
 CREATE TABLE IF NOT EXISTS contact_aliases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,6 +84,8 @@ CREATE TABLE IF NOT EXISTS sync_state (
     chat_id TEXT NOT NULL,
     last_msg_id TEXT,
     last_timestamp DATETIME,
+    -- 旧历史回补断点（页码）。NULL = 该会话历史已翻到底。
+    backfill_page INTEGER,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (platform, chat_id)
 );
@@ -162,6 +190,11 @@ CREATE TABLE IF NOT EXISTS analysis_state (
     platform TEXT NOT NULL,
     chat_id TEXT NOT NULL,
     last_analyzed_ts DATETIME,
+    -- id of the last processed message AT last_analyzed_ts. Together they form a
+    -- (timestamp, id) cursor so a LIMIT boundary inside a same-second burst can't
+    -- skip the unprocessed remainder. NULL = legacy checkpoint (pre-upgrade):
+    -- fall back to strict `> ts` until the next run records a concrete id.
+    last_analyzed_id INTEGER,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (platform, chat_id)
 );
@@ -200,7 +233,90 @@ CREATE TABLE IF NOT EXISTS scheduler_state (
     last_run_at TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-"""
+
+-- Generated weekly/monthly digests (services/digest.py). content is Markdown;
+-- period_start/end are local-naive ISO matching messages.timestamp.
+CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period TEXT NOT NULL,            -- 'weekly' | 'monthly' | 'yearly'
+    period_start DATETIME NOT NULL,
+    period_end DATETIME NOT NULL,
+    content TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ---------------------------------------------------------------------------
+-- Pre-aggregated statistics (services/stats.py). Every table is keyed on
+-- (account, platform, chat_id, ...) and refreshed incrementally by walking
+-- messages.id past stats_state.last_message_id, so overview/heatmap/member
+-- queries never scan the multi-million-row messages table.
+-- `kind` is the cross-platform message kind (see stats.classify_kind).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stats_daily (
+    account TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    day TEXT NOT NULL,               -- YYYY-MM-DD (local)
+    kind TEXT NOT NULL,
+    n INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account, platform, chat_id, day, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_stats_daily_day ON stats_daily(day);
+
+CREATE TABLE IF NOT EXISTS stats_hourly (
+    account TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    n INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account, platform, chat_id, hour)
+);
+
+-- Per-chat rollup: latest name/type, totals, first/last activity.
+CREATE TABLE IF NOT EXISTS stats_chats (
+    account TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    chat_name TEXT,
+    chat_type TEXT,
+    n INTEGER NOT NULL DEFAULT 0,
+    first_ts TEXT,
+    last_ts TEXT,
+    PRIMARY KEY (account, platform, chat_id)
+);
+
+-- sender_key = sender_id when the platform provides one, else sender_name
+-- (wx-cli group messages carry only nicknames).
+CREATE TABLE IF NOT EXISTS stats_sender (
+    account TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    sender_key TEXT NOT NULL,
+    sender_name TEXT,
+    month TEXT NOT NULL,             -- YYYY-MM
+    n INTEGER NOT NULL DEFAULT 0,
+    first_ts TEXT,
+    last_ts TEXT,
+    PRIMARY KEY (account, platform, chat_id, sender_key, month)
+);
+
+CREATE TABLE IF NOT EXISTS stats_sender_hourly (
+    account TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    sender_key TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    n INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account, platform, chat_id, sender_key, hour)
+);
+
+{resources_ddl}
+
+CREATE TABLE IF NOT EXISTS stats_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+""".replace("{resources_ddl}", _RESOURCES_DDL)
 
 # Set by init_db(). False when the SQLite build lacks FTS5 — search and
 # trigger scans then fall back to LIKE.
@@ -302,6 +418,20 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
     message_columns = {row[1] for row in columns}
     if "source_id" not in message_columns:
         await db.execute("ALTER TABLE messages ADD COLUMN source_id TEXT")
+    # messages.account: which of the user's own accounts (per platform) the
+    # message was pulled through. NULL/'' = the default/only account. Powers
+    # the 主号/多号 switch; stats tables carry it as a dimension.
+    if "account" not in message_columns:
+        await db.execute("ALTER TABLE messages ADD COLUMN account TEXT")
+
+    sync_columns = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(sync_state)")}
+    if "backfill_page" not in sync_columns:
+        await db.execute("ALTER TABLE sync_state ADD COLUMN backfill_page INTEGER")
+
+    state_columns = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(analysis_state)")}
+    if state_columns and "last_analyzed_id" not in state_columns:
+        # NULL for existing rows → strict `> ts` until the next run stamps a real id.
+        await db.execute("ALTER TABLE analysis_state ADD COLUMN last_analyzed_id INTEGER")
 
     await _normalize_existing_timestamps(db, "messages", "timestamp")
     await _normalize_existing_timestamps(db, "sync_state", "last_timestamp")
@@ -344,6 +474,18 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
         # Track which model produced the vector — re-embed on model change.
         await db.execute("ALTER TABLE knowledge_items ADD COLUMN embedding_model TEXT")
 
+    # resources: v1 keyed UNIQUE(message_id, kind, url, title) which indexed
+    # every title string (~200MB at 500k rows). The table is derived data, so
+    # drop and recreate; the stats version bump triggers a rebuild on startup.
+    for idx in await db.execute_fetchall("PRAGMA index_list(resources)"):
+        if idx[2] and idx[1].startswith("sqlite_autoindex"):  # unique autoindex
+            cols = await db.execute_fetchall(f"PRAGMA index_info({idx[1]})")
+            if len(cols) == 4:
+                await db.execute("DROP TABLE resources")
+                await db.executescript(_RESOURCES_DDL)
+                await db.execute("DELETE FROM stats_state WHERE key = 'version'")
+            break
+
     # Unreviewed batches older than 30 days are stale; drop them so scheduled
     # runs nobody reviews don't grow the table unbounded.
     await db.execute(
@@ -354,26 +496,40 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
 
 
 async def _normalize_existing_timestamps(db: aiosqlite.Connection, table: str, column: str) -> None:
-    rows = await db.execute_fetchall(
-        f"""SELECT rowid, {column} AS ts
-            FROM {table}
-            WHERE {column} IS NOT NULL
-              AND (
-                  CAST({column} AS TEXT) NOT GLOB '????-??-??T??:??:??*'
-                  OR CAST({column} AS TEXT) GLOB '*Z'
-                  OR CAST({column} AS TEXT) GLOB '*+??:??'
-                  OR CAST({column} AS TEXT) GLOB '*-??:??'
-              )
-            ORDER BY rowid
-            LIMIT ?""",
-        (TIMESTAMP_MIGRATION_BATCH_SIZE,),
-    )
-    for row in rows:
-        raw = row["ts"] if isinstance(row, aiosqlite.Row) else row[1]
-        normalized = normalize_timestamp(raw)
-        if normalized and normalized != raw:
-            rowid = row["rowid"] if isinstance(row, aiosqlite.Row) else row[0]
-            await db.execute(
-                f"UPDATE {table} SET {column}=? WHERE rowid=?",
-                (normalized, rowid),
-            )
+    """Convert legacy non-ISO timestamps (QQ epoch digits, tz-suffixed strings)
+    to local-naive ISO so string comparison sorts correctly. Loops in batches
+    until drained — a partial migration leaves the table in mixed formats, which
+    breaks every `>`/`ORDER BY` on the column (analysis cursor, message list,
+    dashboard window)."""
+    while True:
+        rows = await db.execute_fetchall(
+            f"""SELECT rowid, {column} AS ts
+                FROM {table}
+                WHERE {column} IS NOT NULL
+                  AND (
+                      CAST({column} AS TEXT) NOT GLOB '????-??-??T??:??:??*'
+                      OR CAST({column} AS TEXT) GLOB '*Z'
+                      OR CAST({column} AS TEXT) GLOB '*+??:??'
+                      OR CAST({column} AS TEXT) GLOB '*-??:??'
+                  )
+                ORDER BY rowid
+                LIMIT ?""",
+            (TIMESTAMP_MIGRATION_BATCH_SIZE,),
+        )
+        if not rows:
+            return
+        migrated = 0
+        for row in rows:
+            raw = row["ts"] if isinstance(row, aiosqlite.Row) else row[1]
+            normalized = normalize_timestamp(raw)
+            if normalized and normalized != raw:
+                rowid = row["rowid"] if isinstance(row, aiosqlite.Row) else row[0]
+                await db.execute(
+                    f"UPDATE {table} SET {column}=? WHERE rowid=?",
+                    (normalized, rowid),
+                )
+                migrated += 1
+        # No row in this batch could be normalized further (e.g. unparseable
+        # values that keep matching the filter) — stop to avoid an infinite loop.
+        if migrated == 0:
+            return

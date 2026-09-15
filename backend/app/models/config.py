@@ -15,6 +15,8 @@ class ConfigUpdate(BaseModel):
     daily_token_budget: Optional[int] = None
     budget_action: Optional[str] = None
     vip_contacts: Optional[list[str]] = None
+    self_names: Optional[list[str]] = None
+    wechat_account: Optional[str] = None  # label for the currently logged-in WeChat (多号)
     llm_provider: Optional[str] = None
     llm_api_url: Optional[str] = None
     llm_model: Optional[str] = None

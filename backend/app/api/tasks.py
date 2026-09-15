@@ -24,33 +24,33 @@ async def global_events():
     """One multiplexed SSE channel for the whole UI: task list + inbox unread
     count, pushed only when they change. Replaces the frontend's fixed-interval
     polling of /tasks and /inbox/unread_count."""
-    async def snapshot() -> str:
+    async def snapshot(db: aiosqlite.Connection) -> str:
         tasks = _list_tasks()
         try:
-            async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
-                rows = await db.execute_fetchall(
-                    "SELECT COUNT(*) FROM keyword_triggers WHERE read = 0"
-                )
+            rows = await db.execute_fetchall("SELECT COUNT(*) FROM keyword_triggers WHERE read = 0")
             unread = int(rows[0][0]) if rows else 0
         except Exception:
             unread = 0
         return json.dumps({"tasks": tasks, "unread": unread}, ensure_ascii=False)
 
     async def event_stream():
-        last_payload = None
-        idle_ticks = 0
-        while True:
-            payload = await snapshot()
-            if payload != last_payload:
-                yield f"data: {payload}\n\n"
-                last_payload = payload
-                idle_ticks = 0
-            else:
-                idle_ticks += 1
-                if idle_ticks >= EVENTS_HEARTBEAT_TICKS:
-                    yield ": ping\n\n"
+        # One connection for the stream's lifetime — the old code reconnected
+        # (and span a fresh thread) every second per client for a single COUNT.
+        async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
+            last_payload = None
+            idle_ticks = 0
+            while True:
+                payload = await snapshot(db)
+                if payload != last_payload:
+                    yield f"data: {payload}\n\n"
+                    last_payload = payload
                     idle_ticks = 0
-            await asyncio.sleep(1)
+                else:
+                    idle_ticks += 1
+                    if idle_ticks >= EVENTS_HEARTBEAT_TICKS:
+                        yield ": ping\n\n"
+                        idle_ticks = 0
+                await asyncio.sleep(1)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

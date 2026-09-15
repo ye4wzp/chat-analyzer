@@ -20,6 +20,7 @@ async def search(
     offset: int = 0,
 ):
     kw = keyword.strip()
+    limit = max(1, min(limit, 500))
     # Trigram FTS needs >= 3 chars; shorter queries (common for 2-char Chinese
     # words) and FTS-less builds fall back to a LIKE scan.
     use_fts = database.FTS_ENABLED and len(kw) >= 3
@@ -40,7 +41,10 @@ async def search(
         add_time_filters(conditions, params, "m.timestamp", since, until)
         return " AND ".join(conditions), params
 
-    sql_tpl = """SELECT m.*, a.category, a.urgency, a.summary
+    # Explicit columns — never ship raw_data (full sync JSON) to the client.
+    sql_tpl = """SELECT m.id, m.platform, m.chat_id, m.chat_name, m.chat_type,
+                        m.sender_id, m.sender_name, m.content, m.msg_type, m.timestamp, m.source_id,
+                        a.category, a.urgency, a.summary
                  FROM messages m
                  LEFT JOIN analysis_results a ON a.message_id = m.id
                  WHERE {where}

@@ -64,6 +64,14 @@ npm run dev          # http://localhost:5173
 npm run build        # 然后访问 http://localhost:8000
 ```
 
+### 双击启动（macOS）
+
+```bash
+scripts/make-launcher.sh     # 生成「Chat Analyzer.app」到 ~/Applications，可拖到 Dock
+```
+
+图标源文件 `assets/icon/icon.svg`。双击后在 Terminal 里起后端并自动打开 `http://127.0.0.1:8000`，首次运行会自动建虚拟环境、装依赖、构建前端；关闭窗口即停止。项目换目录后重跑一次该脚本。
+
 数据源接入（微信 / QQ / Telegram）与 LLM 选择，在 **设置 → 数据源 / AI 模型** 页内完成，详见 [`chat-analyzer-项目说明.md`](chat-analyzer-项目说明.md)。
 
 ## 🗂 数据存储
@@ -74,6 +82,10 @@ npm run build        # 然后访问 http://localhost:8000
 | 配置（`0600` 权限） | `~/.chat-analyzer/config.json` |
 
 > 配置文件含 API Key / QQ token / Telegram session，**保存在仓库之外的用户主目录**，不会进入 git。
+
+- 换目录 / 换机器：把整个 `~/.chat-analyzer` 拷走，再用环境变量 `CHAT_ANALYZER_HOME=/新路径` 启动即可。
+- 备份在 `~/.chat-analyzer/backups/`（同步前自动做，保留 5 份）。恢复：停服务 → `gunzip -c chat.db.<时间>.bak.gz > data/chat.db` → 重启；统计表会检测到数据回退并自动全量重建。
+- **必须单进程运行**（不要 `uvicorn --workers N`，也不要重复启动）：任务进度、统计刷新锁都在进程内存里，第二个进程会被启动锁拒绝。
 
 ## 🔒 隐私
 

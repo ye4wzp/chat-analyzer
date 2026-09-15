@@ -7,6 +7,8 @@ import {
   type TagSuggestion,
 } from "@/lib/api"
 import { useTaskRunner } from "@/hooks/useTaskRunner"
+import { SubNav } from "@/components/SubNav"
+import { CONTACT_SUBNAV } from "@/lib/subnav"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -494,9 +496,12 @@ export default function Tags() {
     <div className="flex h-full flex-col overflow-hidden bg-[var(--color-background)]">
       <header className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-background)]/75 px-5 py-5 backdrop-blur md:px-7">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <TagsIcon className="h-6 w-6" />
-            <h1 className="text-2xl font-semibold tracking-tight">联系人标签</h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <TagsIcon className="h-6 w-6" />
+              <h1 className="text-2xl font-semibold tracking-tight">联系人标签</h1>
+            </div>
+            <SubNav items={CONTACT_SUBNAV} />
           </div>
           <Button onClick={() => { void runBatch() }} disabled={batchRunning}>
             {batchRunning ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1.5 h-4 w-4" />}

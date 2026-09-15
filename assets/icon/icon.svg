@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Chat Analyzer">
+  <!-- Cool Slate · 冷峻终端：深色圆角方底 + 单色描边对话气泡 + 内嵌分析折线。
+       取色自 frontend/src/index.css 的设计令牌（oklch 转 sRGB）。 -->
+  <defs>
+    <linearGradient id="base" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22282f"/>
+      <stop offset="1" stop-color="#0a0f13"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#39414b"/>
+      <stop offset="1" stop-color="#39414b" stop-opacity=".2"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="226" y1="250" x2="798" y2="774" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3abffb"/>
+      <stop offset="1" stop-color="#0099d3"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#base)"/>
+  <rect x="105" y="105" width="814" height="814" rx="180" fill="none" stroke="url(#edge)" stroke-width="10"/>
+
+  <path d="M322 250H702a96 96 0 0 1 96 96v208a96 96 0 0 1-96 96H470l-72 132-32-132h-44a96 96 0 0 1-96-96V346a96 96 0 0 1 96-96Z"
+        fill="#15ade9" fill-opacity=".08" stroke="url(#brand)" stroke-width="54" stroke-linejoin="round"/>
+
+  <path d="M330 548 438 428 540 496 694 352" fill="none" stroke="#94e1f4"
+        stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

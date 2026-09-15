@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react"
+import { useSearchParams } from "react-router-dom"
 import { fetchAPI, getErrorMessage, type ChatInfo, type Message } from "@/lib/api"
 import { UrgencyBadge, CategoryBadge } from "@/components/MessageBadges"
 import { Input } from "@/components/ui/input"
@@ -92,12 +93,14 @@ function FilterPanel({ chats, selectedChat, setSelectedChat, platform, setPlatfo
 }
 
 export default function Timeline() {
+  // Deep links from the calendar heatmap: /timeline?date=YYYY-MM-DD&platform=
+  const [initialParams] = useSearchParams()
   const [chats, setChats] = useState<ChatInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [selectedChat, setSelectedChat] = useState<ChatInfo | null>(null)
-  const [platform, setPlatform] = useState("")
-  const [since, setSince] = useState("")
-  const [until, setUntil] = useState("")
+  const [platform, setPlatform] = useState(() => initialParams.get("platform") || "")
+  const [since, setSince] = useState(() => initialParams.get("date") || initialParams.get("since") || "")
+  const [until, setUntil] = useState(() => initialParams.get("date") || initialParams.get("until") || "")
   const [chatSearch, setChatSearch] = useState("")
   const [loading, setLoading] = useState(true)
   const [hasMore, setHasMore] = useState(true)

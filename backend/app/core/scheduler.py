@@ -12,7 +12,7 @@ import aiosqlite
 
 from app.core import database
 from app.core.config import load_config
-from app.core.runners import run_analyze, run_qq_sync, run_sync, run_tag_batch, run_telegram_sync
+from app.core.runners import run_analyze, run_qq_sync, run_report, run_sync, run_tag_batch, run_telegram_sync
 from app.core.tasks import create_task, is_task_running, spawn_cancellable
 from app.models.analyze import AnalyzeRequest
 
@@ -137,5 +137,17 @@ async def scheduler_loop():
             if due("todo_remind", s.todo_remind_enabled, s.todo_remind_interval_minutes):
                 await mark_job_run("todo_remind", now)
                 asyncio.create_task(_notify_open_todos(s.todo_remind_min_urgency))
+
+            # Digest reports: fixed cadences; both share the "report" task type
+            # so the two jobs (and manual runs) can't overlap.
+            report_jobs = (
+                ("report_weekly", s.report_weekly_enabled, 7 * 1440, "weekly"),
+                ("report_monthly", s.report_monthly_enabled, 30 * 1440, "monthly"),
+            )
+            for job, enabled, interval, period in report_jobs:
+                if not is_task_running("report") and due(job, enabled, interval):
+                    task_id = create_task("report")
+                    spawn_cancellable(task_id, run_report(task_id, period, notify=True))
+                    await mark_job_run(job, now)
         except Exception as e:
             logging.warning("scheduler loop error: %s", e)

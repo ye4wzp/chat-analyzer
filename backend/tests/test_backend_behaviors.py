@@ -835,3 +835,203 @@ def test_contact_tagging_suggest_confirm_reject_flow(tmp_path, monkeypatch):
     run(tags_api.add_contact_tag("wechat", "wxid_a", ContactTagAdd(name="同事")))
     names = {c["name"] for c in run(tags_api.contact_tags("wechat", "wxid_a")) if c["status"] == "confirmed"}
     assert {"同事", "技术圈"} <= names
+
+
+async def seed_messages(db_path, rows):
+    async with aiosqlite.connect(str(db_path)) as db:
+        for r in rows:
+            await db.execute(
+                """INSERT INTO messages
+                   (platform, chat_id, chat_name, chat_type, sender_id, sender_name,
+                    content, msg_type, timestamp, source_id, raw_data)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                ("wechat", r.get("chat_id", "chat-1"), r.get("chat_name", "家装群"), "group",
+                 r.get("sender_id", "u1"), r.get("sender_name", "老张"),
+                 r["content"], "text", r["timestamp"], r.get("source_id"), "{}"),
+            )
+        await db.commit()
+
+
+def test_ask_answers_from_retrieved_messages(tmp_path, monkeypatch):
+    from app.core import config as config_module
+    from app.core import database as database_module
+    from app.services.analyzer import AnalyzerService
+    from app.services.ask import answer_question
+
+    db_path = tmp_path / "chat.db"
+    monkeypatch.setattr(database_module, "DB_PATH", db_path)
+    monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "config.json")
+    run(database_module.init_db())
+    run(seed_messages(db_path, [
+        {"content": "你家打算什么时候开工？", "timestamp": "2026-08-01T10:00:00", "sender_name": "我"},
+        {"content": "装修报价出来了，全包 15 万", "timestamp": "2026-08-01T10:05:00"},
+        {"content": "有点贵，再比比价", "timestamp": "2026-08-01T10:06:00", "sender_name": "我"},
+        {"content": "周末打球吗", "timestamp": "2026-08-02T09:00:00", "chat_id": "chat-2", "chat_name": "球友群"},
+    ]))
+
+    async def fake_llm(self, prompt, purpose=""):
+        assert purpose == "ask"
+        if prompt.startswith("从用户的问题"):
+            return '["装修"]'
+        assert "全包 15 万" in prompt  # hit + context made it into the answer prompt
+        return "老张报的装修价是全包 15 万【1】"
+
+    monkeypatch.setattr(AnalyzerService, "_call_llm", fake_llm)
+
+    result = run(answer_question("老张说装修报价多少？", []))
+
+    assert result["keywords"] == ["装修"]
+    assert "15 万" in result["answer"]
+    assert len(result["sources"]) == 1
+    src = result["sources"][0]
+    assert src["ref"] == 1 and src["chat_name"] == "家装群" and "装修报价" in src["preview"]
+    assert result["knowledge"] == []  # no embedding model configured
+
+
+def test_ask_reports_empty_retrieval_without_llm_answer(tmp_path, monkeypatch):
+    from app.core import config as config_module
+    from app.core import database as database_module
+    from app.services.analyzer import AnalyzerService
+    from app.services.ask import answer_question
+
+    db_path = tmp_path / "chat.db"
+    monkeypatch.setattr(database_module, "DB_PATH", db_path)
+    monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "config.json")
+    run(database_module.init_db())
+
+    async def fake_llm(self, prompt, purpose=""):
+        return '["装修"]'
+
+    monkeypatch.setattr(AnalyzerService, "_call_llm", fake_llm)
+
+    result = run(answer_question("老张说装修报价多少？", []))
+    assert result["sources"] == [] and result["knowledge"] == []
+    assert "没有检索到" in result["answer"]
+
+
+def test_generate_digest_persists_report(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+
+    from app.core import config as config_module
+    from app.core import database as database_module
+    from app.services.analyzer import AnalyzerService
+    from app.services.digest import generate_digest
+
+    db_path = tmp_path / "chat.db"
+    monkeypatch.setattr(database_module, "DB_PATH", db_path)
+    monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "config.json")
+    run(database_module.init_db())
+
+    recent = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    old = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    run(seed_messages(db_path, [
+        {"content": "装修报价出来了", "timestamp": recent},
+        {"content": "收到", "timestamp": recent, "sender_name": "我"},
+        {"content": "上个月的旧消息", "timestamp": old},
+    ]))
+
+    async def seed_knowledge():
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.execute(
+                "INSERT INTO knowledge_items (title, content) VALUES (?,?)",
+                ("装修要点", "全包 15 万"),
+            )
+            await db.commit()
+
+    run(seed_knowledge())
+
+    async def fake_llm(self, prompt, purpose=""):
+        assert purpose == "digest"
+        assert "消息总量：2 条" in prompt  # old message excluded from the 7d window
+        assert "装修要点" in prompt
+        return "## 本周概览\n\n测试正文"
+
+    monkeypatch.setattr(AnalyzerService, "_call_llm", fake_llm)
+
+    result = run(generate_digest("weekly"))
+    assert result["period"] == "weekly" and result["messages"] == 2
+
+    async def fetch_report():
+        async with aiosqlite.connect(str(db_path)) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await db.execute_fetchall("SELECT * FROM reports")
+            return rows
+
+    rows = run(fetch_report())
+    assert len(rows) == 1
+    report = rows[0]
+    assert report["id"] == result["id"] and report["period"] == "weekly"
+    assert "测试正文" in report["content"]
+    assert "数据附录" in report["content"]
+    assert "消息总量：2 条" in report["content"]
+
+
+def test_incremental_analyze_same_second_boundary_not_skipped(tmp_path, monkeypatch):
+    """A (timestamp, id) cursor must not skip same-second messages when a LIMIT
+    boundary lands mid-second across two runs."""
+    from app.core import database as database_module
+    from app.core.config import Config
+    from app.core.tasks import create_task
+    import app.core.runners as runners_module
+    import app.services.analyzer as analyzer_module
+
+    db_path = tmp_path / "chat.db"
+    monkeypatch.setattr(database_module, "DB_PATH", db_path)
+    monkeypatch.setattr(runners_module, "load_config", lambda: Config())
+    run(database_module.init_db())
+
+    async def seed():
+        async with aiosqlite.connect(str(db_path)) as db:
+            ids = []
+            # Four messages sharing one second, plus a later one.
+            for idx in range(1, 5):
+                ids.append(await _insert_message(db, "chat-1", "Project", f"m{idx}", "2026-04-30T10:00:00", f"tg-{idx}"))
+            ids.append(await _insert_message(db, "chat-1", "Project", "m5", "2026-04-30T10:05:00", "tg-5"))
+            # Fresh chat: no checkpoint yet (seed path will pick newest first).
+            await db.execute(
+                "INSERT INTO analysis_state (platform, chat_id, last_analyzed_ts, last_analyzed_id) "
+                "VALUES ('telegram','chat-1','2026-04-30T10:00:00',?)",
+                (ids[1],),  # cursor sits at the 2nd same-second message
+            )
+            await db.commit()
+            return ids
+
+    captured: list[int] = []
+    monkeypatch.setattr(analyzer_module, "AnalyzerService", _fake_analyzer(captured))
+    ids = run(seed())
+
+    task_id = create_task("analyze")
+    run(runners_module.run_analyze(task_id, runners_module.AnalyzeRequest(limit=10)))
+
+    # Messages 3 and 4 (same second, id > cursor) plus message 5 must all be seen.
+    assert captured == [ids[2], ids[3], ids[4]]
+
+
+def test_api_security_guard_blocks_rebinding_and_csrf(tmp_path, monkeypatch):
+    """Host guard blocks DNS-rebinding on the token-less default; Origin guard
+    blocks cross-site state-changing requests; normal localhost use passes."""
+    from fastapi.testclient import TestClient
+    from app.core import config as config_module
+    import app.main as main_module
+
+    monkeypatch.setattr(config_module, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(config_module, "_api_token_cache", "", raising=False)
+    client = TestClient(main_module.app)
+
+    assert client.get("/api/tasks", headers={"host": "127.0.0.1:8000"}).status_code == 200
+    assert client.get("/api/tasks", headers={"host": "attacker.example:8000"}).status_code == 403
+    csrf = client.post("/api/sync/all", headers={"host": "127.0.0.1:8000", "origin": "http://evil.example"})
+    assert csrf.status_code == 403
+    # Same-origin POST clears the guard (downstream status may vary, just not 403).
+    ok = client.post("/api/sync/all", headers={"host": "127.0.0.1:8000", "origin": "http://127.0.0.1:8000"})
+    assert ok.status_code != 403
+
+
+def test_qq_launcher_logs_redact_tokens():
+    from app.services.sync.qq_launcher import _redact_tokens
+
+    raw = "[QCE] Token: abcdef0123456789ABCDEF0123\naccess_token=SECRETVALUE123456\nkeep this line"
+    out = _redact_tokens(raw)
+    assert "abcdef0123456789ABCDEF0123" not in out
+    assert "SECRETVALUE123456" not in out
+    assert "********" in out and "keep this line" in out

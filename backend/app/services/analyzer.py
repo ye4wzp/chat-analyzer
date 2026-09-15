@@ -213,7 +213,16 @@ class AnalyzerService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
+        # A hung claude CLI (stale login, network stall) must not pin the analyze
+        # task forever and wedge the scheduler via is_task_running.
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            self.llm_fail_count += 1
+            self.last_llm_error = "claude CLI timeout after 600s"
+            return None
         if proc.returncode != 0:
             self.llm_fail_count += 1
             self.last_llm_error = "claude CLI exit nonzero"
@@ -337,8 +346,17 @@ class AnalyzerService:
                         },
                     )
                     if resp.status_code != 200:
-                        self.llm_fail_count += 1
                         body = resp.text[:300]
+                        # 429/5xx are transient (rate limit, overloaded local
+                        # inference) — reuse the backoff loop instead of dropping
+                        # the whole window on one blip. 4xx won't fix on retry.
+                        if (resp.status_code == 429 or resp.status_code >= 500) and attempt < max_retries:
+                            wait = 5 * (attempt + 1)
+                            logger.warning("LLM %s returned %d (attempt %d/%d), retrying in %ds",
+                                           llm.model, resp.status_code, attempt + 1, max_retries + 1, wait)
+                            await asyncio.sleep(wait)
+                            continue
+                        self.llm_fail_count += 1
                         self.last_llm_error = f"HTTP {resp.status_code}: {body}"
                         logger.warning(
                             "LLM %s returned %d: %s (prompt len=%d)",

@@ -131,16 +131,20 @@ async def _scan_semantic(db, cfg: Config, global_max: int) -> list[tuple[str, in
     for trig in triggers:
         state_key = SEM_STATE_PREFIX + trig.query
         since_id = await _read_scan_state(db, state_key)
+        # Oldest-first: a backlog larger than the cap drains across scans instead
+        # of scanning only the newest cap and skipping the middle. State advances
+        # only over messages actually processed this scan.
         rows = await db.execute_fetchall(
             """SELECT id, chat_name, sender_name, content FROM messages
-               WHERE id > ? AND LENGTH(content) >= ? ORDER BY id DESC LIMIT ?""",
+               WHERE id > ? AND LENGTH(content) >= ? ORDER BY id ASC LIMIT ?""",
             (since_id, SEM_MIN_CONTENT_LEN, SEM_SCAN_CAP),
         )
-        if len(rows) == SEM_SCAN_CAP:
-            logger.info("semantic trigger %r capped at %d newest messages this scan", trig.query, SEM_SCAN_CAP)
         if not rows:
             await _write_scan_state(db, state_key, global_max)
             continue
+        capped = len(rows) == SEM_SCAN_CAP
+        if capped:
+            logger.info("semantic trigger %r has a backlog; scanning %d oldest this pass", trig.query, SEM_SCAN_CAP)
 
         query_vec = await embed_text(trig.query)
         if not query_vec:
@@ -152,6 +156,8 @@ async def _scan_semantic(db, cfg: Config, global_max: int) -> list[tuple[str, in
             if v is not None:
                 blobs.append(serialize_vec(v))
                 idx_map.append(i)
+        if not blobs:
+            continue  # whole batch failed to embed — don't advance, retry next scan
         display = SEM_DISPLAY_PREFIX + trig.query
         for blob_idx, score in rank_by_similarity(query_vec, blobs, len(blobs)):
             if score < trig.threshold:
@@ -163,7 +169,9 @@ async def _scan_semantic(db, cfg: Config, global_max: int) -> list[tuple[str, in
             )
             if cur.rowcount > 0:
                 new_triggers.append((display, int(r["id"]), _citation(r)))
-        await _write_scan_state(db, state_key, global_max)
+        # When capped, only advance to the batch's max id so the next scan
+        # continues the backlog; otherwise everything up to global_max is seen.
+        await _write_scan_state(db, state_key, int(rows[-1]["id"]) if capped else global_max)
     return new_triggers
 
 

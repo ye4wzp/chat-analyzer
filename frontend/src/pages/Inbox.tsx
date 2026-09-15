@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 import { fetchAPI, getErrorMessage } from "@/lib/api"
@@ -28,16 +28,20 @@ export default function Inbox() {
   const [onlyUnread, setOnlyUnread] = useState(true)
   const [scanning, setScanning] = useState(false)
   const navigate = useNavigate()
+  const reqRef = useRef(0)
 
   const refresh = useCallback(async () => {
+    const reqId = ++reqRef.current
     setLoading(true)
     try {
       const data = await fetchAPI<TriggerRow[]>(`/inbox?only_unread=${onlyUnread}&limit=200`)
-      setItems(data)
+      // Drop stale responses: a fast toggle can leave an older request resolving
+      // last and clobbering the current view.
+      if (reqId === reqRef.current) setItems(data)
     } catch (e) {
-      toast.error(getErrorMessage(e))
+      if (reqId === reqRef.current) toast.error(getErrorMessage(e))
     } finally {
-      setLoading(false)
+      if (reqId === reqRef.current) setLoading(false)
     }
   }, [onlyUnread])
 

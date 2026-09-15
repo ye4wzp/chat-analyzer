@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import { fetchAPI, getErrorMessage, subscribeSSE, type TaskProgress, type TaskState } from "@/lib/api"
 
@@ -21,11 +21,22 @@ export interface TaskRunOptions {
 export function useTaskRunner() {
   const lockRef = useRef<Set<string>>(new Set())
   const [running, setRunning] = useState<Set<string>>(new Set())
+  // Active per-run teardown fns (SSE unsubscribe + fallback interval). Cleared
+  // on unmount so navigating away from a page mid-task doesn't leak an open
+  // EventSource (they occupy the browser's ~6 conns/origin) or a poll timer.
+  const cleanupsRef = useRef<Set<() => void>>(new Set())
+  const mountedRef = useRef(true)
+
+  useEffect(() => () => {
+    mountedRef.current = false
+    cleanupsRef.current.forEach(fn => fn())
+    cleanupsRef.current.clear()
+  }, [])
 
   const setLock = (taskType: string, on: boolean) => {
     if (on) lockRef.current.add(taskType)
     else lockRef.current.delete(taskType)
-    setRunning(new Set(lockRef.current))
+    if (mountedRef.current) setRunning(new Set(lockRef.current))
   }
 
   const run = useCallback(async ({ start, taskType, loadingText, onDone, onError }: TaskRunOptions) => {
@@ -44,7 +55,17 @@ export function useTaskRunner() {
       return
     }
 
+    let pollId: number | undefined
+    // References `unsubscribe` (a const assigned below) — only ever invoked from
+    // async callbacks, by which point subscribeSSE has returned and assigned it.
+    const cleanup = () => {
+      unsubscribe()
+      if (pollId !== undefined) window.clearInterval(pollId)
+      cleanupsRef.current.delete(cleanup)
+    }
+
     const finish = async (data: TaskProgress) => {
+      cleanup()
       if (data.status === "done") {
         try {
           await onDone?.(data, taskId)
@@ -62,24 +83,23 @@ export function useTaskRunner() {
 
     const unsubscribe = subscribeSSE<TaskProgress>(`/tasks/${taskId}/events`, (data) => {
       if (TERMINAL.has(data.status)) {
-        unsubscribe()
         void finish(data)
       } else {
         toast.loading(data.message || data.status, { id: toastId })
       }
     }, () => {
       // SSE dead after retries — poll the task list until terminal.
-      const poll = window.setInterval(async () => {
+      pollId = window.setInterval(async () => {
         try {
           const tasks = await fetchAPI<TaskState[]>("/tasks")
           const t = tasks.find(x => x.id === taskId)
           if (!t || TERMINAL.has(t.status)) {
-            window.clearInterval(poll)
             void finish(t ?? { status: "error", progress: 0, message: "任务状态未知" })
           }
         } catch { /* keep polling */ }
       }, FALLBACK_POLL_MS)
     })
+    cleanupsRef.current.add(cleanup)
   }, [])
 
   return { run, running }

@@ -38,6 +38,14 @@ async def get_scheduler():
         out[f"{prefix}_interval_minutes"] = interval
         out[f"last_{stem}_at"] = last.isoformat() if last else None
         out[f"next_{stem}_at"] = next_run.isoformat() if next_run else None
+
+    # Digest reports: fixed cadence, toggle-only (no interval field).
+    for job, days in (("report_weekly", 7), ("report_monthly", 30)):
+        enabled = getattr(s, f"{job}_enabled")
+        last = state.get(job)
+        out[f"{job}_enabled"] = enabled
+        out[f"last_{job}_at"] = last.isoformat() if last else None
+        out[f"next_{job}_at"] = (last + timedelta(days=days)).isoformat() if (enabled and last) else None
     return out
 
 
@@ -58,6 +66,13 @@ async def update_scheduler(body: SchedulerUpdate):
             setattr(s, f"{prefix}_enabled", enabled)
         if interval is not None:
             setattr(s, f"{prefix}_interval_minutes", interval)
+
+    for job in ("report_weekly", "report_monthly"):
+        enabled = getattr(body, f"{job}_enabled")
+        if enabled is not None:
+            if enabled and not getattr(s, f"{job}_enabled"):
+                await mark_job_run(job, now)
+            setattr(s, f"{job}_enabled", enabled)
 
     if body.tag_max_contacts is not None:
         s.tag_max_contacts = body.tag_max_contacts
