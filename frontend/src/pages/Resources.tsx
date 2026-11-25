@@ -124,7 +124,7 @@ export default function Resources() {
           <StatsFilterBar filters={filters}>
             <Select value={chatId ? `${params.get("platform")}|${chatId}` : ""} onChange={e => setChat(e.target.value)} className="h-9 w-56 rounded-lg bg-[var(--color-card)] text-sm">
               <option value="">全部聊天</option>
-              {chats.map(c => <option key={`${c.platform}|${c.chat_id}`} value={`${c.platform}|${c.chat_id}`}>{c.chat_name || c.chat_id} · {c.n}</option>)}
+              {chats.map(c => <option key={`${c.platform}|${c.chat_id}`} value={`${c.platform}|${c.chat_id}`}>{c.chat_name || c.chat_id} · {PLATFORM_LABEL[c.platform] || c.platform} · {c.n}</option>)}
             </Select>
           </StatsFilterBar>
         </div>
@@ -181,8 +181,8 @@ export default function Resources() {
                           <p className="truncate text-sm font-medium">{r.title || "(无标题)"}</p>
                         )}
                         <p className="mt-0.5 truncate text-xs text-[var(--color-muted-foreground)]">
-                          {host && <span className="mr-2 rounded bg-[var(--color-secondary)] px-1.5 py-0.5 font-mono text-[10px]">{host}</span>}
-                          <button onClick={() => navigate(`/chats?platform=${r.platform}&chat_id=${encodeURIComponent(r.chat_id)}`)} className="hover:text-[var(--color-primary)]">{r.chat_name || r.chat_id}</button>
+                          {host && <span className="mr-2 rounded bg-[var(--color-secondary)] px-1.5 py-0.5 font-mono text-xs">{host}</span>}
+                          <button onClick={() => navigate(`/chats?platform=${r.platform}&chat_id=${encodeURIComponent(r.chat_id)}`)} className="break-words text-left text-sm font-semibold text-foreground hover:text-primary">{r.chat_name || r.chat_id}</button>
                           {r.sender_name && <> · {r.sender_name}</>}
                         </p>
                       </div>

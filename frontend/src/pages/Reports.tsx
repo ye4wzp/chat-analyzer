@@ -99,7 +99,7 @@ export default function Reports() {
                 className={`group cursor-pointer rounded-lg border p-3 transition-colors ${selected?.id === r.id ? "border-[var(--color-primary)] bg-[var(--color-accent)]" : "border-[var(--color-border)] bg-[var(--color-card)] hover:bg-[var(--color-accent)]"}`}
               >
                 <div className="flex items-center gap-2">
-                  <span className="rounded-full bg-[var(--color-primary-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--color-primary)]">
+                  <span className="rounded-full bg-[var(--color-primary-subtle)] px-2 py-0.5 text-xs font-medium text-[var(--color-primary)]">
                     {PERIOD_LABEL[r.period] ?? r.period}
                   </span>
                   <span className="font-mono text-xs text-[var(--color-muted-foreground)]">

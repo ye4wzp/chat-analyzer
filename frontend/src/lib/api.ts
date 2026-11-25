@@ -145,7 +145,10 @@ export function subscribeGlobalEvents(onData: (d: GlobalEventsData) => void): ()
   }
 }
 
+export interface WechatArticleLink { url: string; title: string }
+
 export interface Message {
+  article_links?: WechatArticleLink[]
   id: number
   platform: string
   chat_id: string
@@ -179,6 +182,9 @@ export interface ChatInfo {
 }
 
 export interface QQConfig {
+  source: "qce" | "local"
+  local_path: string
+  local_account: string
   enabled: boolean
   host: string
   port: number
@@ -204,8 +210,14 @@ export interface Config {
   semantic_triggers?: SemanticTrigger[]
   chat_filter: {
     mode: string
-    chats: string[]
+    chats: string[]          // legacy display names, migrated to refs at startup
+    refs: ChatRef[]
   }
+  sync_scope?: {
+    exclude_channels: boolean
+    exclude_chats: ChatRef[]
+  }
+  storage?: { keep_raw_text: boolean }
   llm: {
     provider: string
     api_url: string
@@ -290,6 +302,7 @@ export interface KnowledgeBatch {
 }
 
 export interface SyncHealth {
+  runs?: { platform: string; status: string; task_id: string }[]
   platforms: { platform: string; chats: number; last_sync: string | null; last_message_ts: string | null }[]
   stale: { platform: string; chat_id: string; last_sync: string | null }[]
 }
@@ -327,6 +340,9 @@ export interface TaskState {
   progress: number
   message: string
   summary?: string
+  request?: { platforms: string[] }
+  journal_error?: boolean
+  results?: Record<string, { imported: number; chats: number; targets: number; details: { chat_id: string; name: string; status: string; imported: number; error?: string }[] }>
 }
 
 export interface AskSource {
@@ -339,6 +355,7 @@ export interface AskSource {
   timestamp: string
   preview: string
   content: string
+  context?: { id: number; sender_name: string | null; content: string; timestamp: string }[]
 }
 
 export interface AskKnowledgeSource {
@@ -670,16 +687,60 @@ export interface MembersResponse {
   inactive_days: number
 }
 
+export interface ChatRef { platform: string; chat_id: string }
+export const chatRefKey = (r: { platform: string; chat_id: string }) => `${r.platform}|${r.chat_id}`
+
+export interface PersonIdentity {
+  id: number
+  person_id: number
+  platform: string
+  kind: "chat" | "sender"
+  value: string
+  chat_id: string
+  display_name: string | null
+  source: string
+}
+
+export interface PersonFootprint {
+  identities: PersonIdentity[]
+  chats: { platform: string; chat_id: string; chat_name: string | null; chat_type: string | null; n: number; first_ts: string | null; last_ts: string | null; identity_id: number }[]
+  groups: { platform: string; chat_id: string; chat_name: string | null; chat_type: string | null; n: number; first_ts: string | null; last_ts: string | null; months: number; identity_id: number }[]
+  total_messages: number
+}
+
+export interface IdentityCandidate {
+  platform: string
+  kind: "sender"
+  value: string
+  chat_id: string
+  display_name: string | null
+  groups: number
+  messages: number
+  reason: string
+  already_linked: boolean
+}
+
+export interface PersonSummary {
+  id: number
+  name: string
+  notes: string | null
+  created_at: string
+  identities: number
+  platforms: string[]
+}
+
 export interface ContactListItem {
   platform: string
   chat_id: string
   chat_name: string | null
+  local_note?: string
   chat_type: string | null
   account: string
   messages: number
   first_ts: string | null
   last_ts: string | null
   tags: { tag_id: number; name: string; color: string | null }[]
+  person_id: number | null
   canonical_name: string | null
   is_vip: boolean
 }
@@ -703,7 +764,9 @@ export interface ContactProfile {
   senders: { sender_key: string; name: string; count: number; share: number; last_ts: string | null; is_me: boolean; is_contact: boolean }[]
   tags: ContactTagLink[]
   canonical_name: string | null
-  aliases: (AliasEntry & { canonical_name: string })[]
+  person: { id: number; name: string; notes: string | null } | null
+  footprint: PersonFootprint | null
+  identity_candidates: IdentityCandidate[]
   is_vip: boolean
   summary: string | null
   summary_generated_at: string | null
@@ -734,4 +797,11 @@ export interface ResourcesResponse {
 
 export function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+export function updateWechatArchive(chatIds: string[], action: "enable" | "pause" | "retry") {
+  return fetchAPI<{ accounts: number }>("/wechat-archive", {
+    method: "POST",
+    body: JSON.stringify({ chat_ids: chatIds, action }),
+  })
 }

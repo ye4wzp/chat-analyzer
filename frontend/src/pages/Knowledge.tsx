@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { Archive, BookOpen, Check, ClipboardCheck, Clock3, Cpu, Download, FileText, Inbox, Loader2, Pencil, Search, Sparkles, Trash2, Undo2, X } from "lucide-react"
 import { apiDownloadUrl, fetchAPI, getErrorMessage, type DashboardStats, type KnowledgeBatch, type KnowledgeItem, type PendingBatch, type PendingKnowledge } from "@/lib/api"
+import { SourceMessages } from "@/components/SourceMessages"
 import { formatTime, parseTime } from "@/lib/utils"
 import { useTaskRunner } from "@/hooks/useTaskRunner"
 import { KnowledgeReviewModal } from "@/components/KnowledgeReviewModal"
@@ -154,6 +155,7 @@ function KnowledgeDetail({ item, extending, onExtend, onUpdate, onDelete, onSele
               <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-background)] p-3 text-sm">
                 <p className="font-medium">{item.source_chat || "未知来源"}</p>
                 <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">消息 ID {item.source_message_ids}</p>
+                <SourceMessages key={item.id} sourceIds={item.source_message_ids} />
               </div>
             </div>
 
@@ -444,7 +446,7 @@ export default function Knowledge() {
             </div>
             <div className="flex flex-wrap gap-2">
               {allTags.slice(0, 6).map(tag => (
-                <button key={tag} onClick={() => setActiveTag(tag === activeTag ? "" : tag)} className={`rounded-full px-2.5 py-1 text-xs ${tag === activeTag ? "bg-[var(--color-primary)] text-white" : "bg-[var(--color-secondary)] text-[var(--color-muted-foreground)]"}`}>{tag}</button>
+                <button key={tag} onClick={() => setActiveTag(tag === activeTag ? "" : tag)} className={`rounded-full px-2.5 py-1 text-xs ${tag === activeTag ? "bg-[var(--color-primary)] text-[var(--color-primary-foreground)]" : "bg-[var(--color-secondary)] text-[var(--color-muted-foreground)]"}`}>{tag}</button>
               ))}
             </div>
           </div>
@@ -487,7 +489,7 @@ export default function Knowledge() {
                   <div className="flex items-start gap-2">
                     <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${daysSince(item.created_at) < 1 ? "bg-[var(--color-success)]" : daysSince(item.created_at) <= 7 ? "bg-[var(--color-primary)]" : "bg-[var(--color-text-faint)]"}`} />
                     <div className="min-w-0">
-                      <p className="truncate font-medium">{item.title}</p>
+                      <p className="break-words font-semibold">{item.title}</p>
                       <p className="mt-1 truncate text-xs text-[var(--color-muted-foreground)]"># {parseTags(item.tags)[0] || "未分类"} · {formatTime(item.created_at)}</p>
                     </div>
                   </div>

@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel
 
 # Data lives outside the repo. Override with CHAT_ANALYZER_HOME to move it to
@@ -17,13 +18,24 @@ class PreFilterConfig(BaseModel):
         r"^(在吗|在不在|嗯|哦|好|好的|ok|OK|收到|嗯嗯|行|可以|对|是的)$",
         r"^\[.*\]$",
     ]
-    skip_msg_types: list[str] = ["system", "sticker"]
+    skip_msg_types: list[str] = ["system", "sticker"]  # cross-platform kinds (messages.kind), not raw msg_type
     min_content_length: int = 2
 
 
+class ChatRef(BaseModel):
+    platform: str
+    chat_id: str
+
+    def key(self) -> tuple[str, str]:
+        return (self.platform, self.chat_id)
+
+
 class ChatFilterConfig(BaseModel):
+    """Analysis scope. `refs` is the real key; `chats` (display names) is the
+    legacy form, resolved to refs at startup and kept only until it's empty."""
     mode: str = "whitelist"  # whitelist: 只分析列出的群 / blacklist: 分析除列出的以外的群
-    chats: list[str] = []    # 群聊名称列表
+    chats: list[str] = []    # legacy: 群聊名称列表（会在启动时迁移到 refs）
+    refs: list[ChatRef] = []
 
 
 class LLMConfig(BaseModel):
@@ -42,7 +54,9 @@ class WeChatConfig(BaseModel):
 
 
 class QQConfig(BaseModel):
-    """NapCat-QCE HTTP API integration."""
+    source: Literal["qce", "local"] = "qce"
+    local_path: str = ""
+    local_account: str = ""
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 40653
@@ -58,6 +72,17 @@ class TelegramConfig(BaseModel):
     phone: str = ""
     session_string: str = ""
     username: str = ""  # cached display name from /api/telegram/status
+
+
+class StorageConfig(BaseModel):
+    keep_raw_text: bool = False  # keep raw_data JSON for plain-text WeChat/Telegram messages (≈4× content size)
+
+
+class SyncScopeConfig(BaseModel):
+    """What gets ingested at all. Filtering at the door keeps the DB, FTS index,
+    backups and every rollup proportional to what you actually analyse."""
+    exclude_channels: bool = True      # Telegram broadcast channels: one-way feeds, no conversation
+    exclude_chats: list[ChatRef] = []  # never sync these (per platform + chat_id)
 
 
 class SchedulerConfig(BaseModel):
@@ -106,6 +131,8 @@ class Config(BaseModel):
     chat_filter: ChatFilterConfig = ChatFilterConfig()
     pre_filter: PreFilterConfig = PreFilterConfig()
     llm: LLMConfig = LLMConfig()
+    storage: StorageConfig = StorageConfig()
+    sync_scope: SyncScopeConfig = SyncScopeConfig()
     wechat: WeChatConfig = WeChatConfig()
     qq: QQConfig = QQConfig()
     telegram: TelegramConfig = TelegramConfig()
@@ -143,3 +170,38 @@ def get_api_token() -> str:
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+async def migrate_chat_filter_names() -> int:
+    """Resolve legacy chat_filter.chats (display names) to refs using the
+    chats we actually have. Names that match exactly one chat move over;
+    ambiguous or unknown names stay as names (still honoured at query time).
+    Returns how many were migrated."""
+    import aiosqlite
+    from app.core import database
+
+    cfg = load_config()
+    if not cfg.chat_filter.chats:
+        return 0
+    moved = 0
+    remaining: list[str] = []
+    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
+        for name in cfg.chat_filter.chats:
+            rows = await db.execute_fetchall(
+                "SELECT DISTINCT platform, chat_id FROM stats_chats WHERE chat_name = ?", (name,)
+            )
+            if not rows:
+                rows = await db.execute_fetchall(
+                    "SELECT DISTINCT platform, chat_id FROM messages WHERE chat_name = ? LIMIT 2", (name,)
+                )
+            if len(rows) == 1:
+                ref = ChatRef(platform=rows[0][0], chat_id=rows[0][1])
+                if ref.key() not in {r.key() for r in cfg.chat_filter.refs}:
+                    cfg.chat_filter.refs.append(ref)
+                moved += 1
+            else:
+                remaining.append(name)
+    if moved:
+        cfg.chat_filter.chats = remaining
+        save_config(cfg)
+    return moved

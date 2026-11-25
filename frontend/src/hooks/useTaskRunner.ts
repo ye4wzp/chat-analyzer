@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import { fetchAPI, getErrorMessage, subscribeSSE, type TaskProgress, type TaskState } from "@/lib/api"
 
-const TERMINAL = new Set(["done", "error", "cancelled"])
+const TERMINAL = new Set(["done", "error", "cancelled", "partial", "interrupted"])
 const FALLBACK_POLL_MS = 3000
 
 export interface TaskRunOptions {
@@ -72,6 +72,9 @@ export function useTaskRunner() {
         } finally {
           toast.success(data.message || "完成", { id: toastId })
         }
+      } else if (data.status === "partial" || data.status === "interrupted") {
+        try { await onDone?.(data, taskId) }
+        finally { toast.warning(data.message || "同步尚未完整，可继续处理", { id: toastId }) }
       } else if (data.status === "cancelled") {
         toast.info(data.message || "已取消", { id: toastId })
       } else {

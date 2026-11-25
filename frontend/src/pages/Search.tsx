@@ -7,7 +7,10 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Select } from "@/components/ui/select"
 import { Search as SearchIcon } from "lucide-react"
+import { ChatScopeControls } from "@/components/ChatScopeControls"
 import { PAGE_SIZE } from "@/lib/constants"
+
+import { ConversationSource } from "@/components/ConversationIdentity"
 
 type Result = Message & Partial<AnalysisResult>
 
@@ -25,7 +28,7 @@ function MessageDetail({ m, kw }: { m: Result; kw: string }) {
   return (
     <div className="space-y-4">
       <div>
-        <p className="text-xs text-muted-foreground mb-1">{m.platform} · {m.chat_name}</p>
+        <ConversationSource chat={m} />
         <p className="text-sm font-medium">{m.sender_name}</p>
         <p className="text-xs text-muted-foreground">{formatTime(m.timestamp)}</p>
       </div>
@@ -53,8 +56,8 @@ export default function Search() {
   const [hasMore, setHasMore] = useState(false)
   const [keyword, setKeyword] = useState("")
   const [searchedKeyword, setSearchedKeyword] = useState("")
-  const [filters, setFilters] = useState({ platform: "", category: "", since: "", until: "" })
-  const offsetRef = useRef(0)
+  const [filters, setFilters] = useState({ platform: "", chat_id: "", category: "", since: "", until: "" })
+  const cursorRef = useRef<{ timestamp: string; id: number } | null>(null)
   // Snapshot of the query+filters actually executed, so "加载更多" paginates the
   // executed search (not whatever's now in the input) and a stale response from
   // an older search can't clobber a newer one.
@@ -74,22 +77,25 @@ export default function Search() {
     try {
       const params = new URLSearchParams({ keyword: active.keyword })
       if (active.filters.platform) params.set("platform", active.filters.platform)
+      if (active.filters.chat_id) params.set("chat_id", active.filters.chat_id)
       if (active.filters.category) params.set("category", active.filters.category)
       if (active.filters.since) params.set("since", active.filters.since)
       if (active.filters.until) params.set("until", active.filters.until)
-      params.set("offset", String(append ? offsetRef.current : 0))
+      if (append && cursorRef.current) {
+        params.set("before_ts", cursorRef.current.timestamp)
+        params.set("before_id", String(cursorRef.current.id))
+      }
       params.set("limit", String(PAGE_SIZE))
       const data = await fetchAPI<Result[]>(`/search?${params}`)
       if (reqId !== reqRef.current) return  // superseded by a newer search
       if (append) {
         setResults(prev => [...prev, ...data])
-        offsetRef.current += data.length
       } else {
         executedRef.current = active
         setResults(data)
-        offsetRef.current = data.length
         setSearchedKeyword(active.keyword)
       }
+      cursorRef.current = data.at(-1) ?? null
       setHasMore(data.length === PAGE_SIZE)
     } catch (e: unknown) {
       if (reqId === reqRef.current) setError(getErrorMessage(e))
@@ -114,21 +120,14 @@ export default function Search() {
             onKeyDown={e => e.key === "Enter" && search()}
           />
         </div>
-        <div className="flex items-center gap-2">
-          <Select value={filters.platform} onChange={set("platform")} className="h-8 text-sm">
-            <option value="">全部平台</option>
-            <option value="wechat">微信</option>
-            <option value="qq">QQ</option>
-            <option value="telegram">Telegram</option>
-          </Select>
+        <div className="flex flex-wrap items-center gap-2">
+          <ChatScopeControls value={filters} disabled={loading} onChange={scope => setFilters(f => ({ ...f, ...scope }))} />
           <Select value={filters.category} onChange={set("category")} className="h-8 text-sm">
             <option value="">全部分类</option>
             <option value="important">重要</option>
             <option value="todo">待办</option>
             <option value="casual">闲聊</option>
           </Select>
-          <Input type="date" value={filters.since} onChange={set("since")} className="h-8 w-36 text-sm" />
-          <Input type="date" value={filters.until} onChange={set("until")} className="h-8 w-36 text-sm" />
           <Button onClick={() => search()} disabled={loading || !keyword.trim()} size="sm">
             {loading ? "搜索中..." : "搜索"}
           </Button>
@@ -142,22 +141,22 @@ export default function Search() {
           <p className="mb-3 text-sm text-muted-foreground">{results.length} 个结果</p>
           <div className="space-y-0">
             {results.map(r => (
-              <div
+              <button type="button"
                 key={r.id}
                 onClick={() => open(<MessageDetail m={r} kw={searchedKeyword} />)}
-                className="flex items-start gap-3 py-3 px-3 rounded-lg cursor-pointer transition-colors border-b border-border/30 hover:bg-card"
+                className="flex w-full text-left flex-wrap sm:flex-nowrap items-start gap-3 py-3 px-3 rounded-lg cursor-pointer transition-colors border-b border-border/30 hover:bg-card"
               >
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
+                  <ConversationSource chat={r} />
+                  <div className="my-1 flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium">{r.sender_name}</span>
-                    <span className="text-xs text-muted-foreground">{r.chat_name}</span>
                     <CategoryBadge category={r.category} />
                     <UrgencyBadge urgency={r.urgency} />
                   </div>
-                  <p className="text-sm text-muted-foreground truncate">{highlight(r.content, searchedKeyword)}</p>
+                  <p className="line-clamp-3 break-words text-sm leading-relaxed text-foreground">{highlight(r.content, searchedKeyword)}</p>
                 </div>
                 <span className="text-xs text-muted-foreground shrink-0">{formatTime(r.timestamp)}</span>
-              </div>
+              </button>
             ))}
           </div>
           {hasMore && (

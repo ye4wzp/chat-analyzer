@@ -146,7 +146,7 @@ export function ChatProfileSheet({ open, platform, chatId, onClose }: Props) {
                   </div>
                 ))}
               </div>
-              <div className="flex justify-between text-[10px] text-[var(--color-muted-foreground)] tabular-nums">
+              <div className="flex justify-between text-xs text-[var(--color-muted-foreground)] tabular-nums">
                 <span>0</span><span>6</span><span>12</span><span>18</span><span>23</span>
               </div>
             </section>

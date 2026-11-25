@@ -4,6 +4,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from app.services.sync._common import upsert_message
+
 from app.core.database import DB_PATH
 from app.core.time_utils import normalize_timestamp
 
@@ -105,26 +107,20 @@ async def _import_chats(chats: list[dict]) -> dict:
                 msg_type = str(msg.get("msg_type") or msg.get("type") or "text")
                 source_id = _source_id(msg, chat_id, timestamp, sender_id, content)
 
-                cursor = await db.execute(
-                    """INSERT OR IGNORE INTO messages
-                       (platform, chat_id, chat_name, chat_type, sender_id, sender_name,
-                        content, msg_type, timestamp, source_id, raw_data)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        "qq",
-                        chat_id,
-                        chat_name,
-                        chat_type,
-                        sender_id,
-                        sender_name,
-                        content,
-                        msg_type,
-                        timestamp,
-                        source_id,
-                        json.dumps(msg, ensure_ascii=False),
-                    ),
+                imported += await upsert_message(
+                    db,
+                    platform="qq",
+                    chat_id=chat_id,
+                    chat_name=chat_name,
+                    chat_type=chat_type,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    content=content,
+                    msg_type=msg_type,
+                    timestamp=timestamp,
+                    src_id=source_id,
+                    raw=msg,
                 )
-                imported += max(cursor.rowcount, 0)
                 if last_ts is None or timestamp > last_ts:
                     last_ts = timestamp
 

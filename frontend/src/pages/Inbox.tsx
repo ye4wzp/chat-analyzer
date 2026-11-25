@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { CheckCheck, RefreshCw, Inbox as InboxIcon, Loader2, ExternalLink } from "lucide-react"
 import { formatTime } from "@/lib/utils"
-import { PLATFORM_COLOR, PLATFORM_LABEL } from "@/lib/constants"
+import { PLATFORM_LABEL } from "@/lib/constants"
 
 interface TriggerRow {
   id: number
@@ -123,16 +123,16 @@ export default function Inbox() {
           {items.map(t => (
             <div
               key={t.id}
-              className={`rounded-lg border p-3 transition-colors ${t.read ? "border-[var(--color-border)] opacity-70" : "border-[var(--color-info)]/40 bg-[var(--color-info)]/5"}`}
+              className={`rounded-lg border p-3 transition-colors ${t.read ? "border-[var(--color-border)] bg-card" : "border-[var(--color-info)]/40 bg-[var(--color-info)]/5"}`}
             >
-              <div className="flex items-center gap-2 mb-1 text-xs">
+              <div className="flex flex-wrap items-center gap-2 mb-1 text-xs">
                 <Badge variant="outline" style={{ borderColor: "var(--color-info)", color: "var(--color-info)" }}>
                   {t.keyword}
                 </Badge>
-                <span style={{ color: PLATFORM_COLOR[t.platform] || "var(--color-muted-foreground)" }}>
+                <span className="font-medium text-muted-foreground">
                   {PLATFORM_LABEL[t.platform] || t.platform}
                 </span>
-                <span className="text-[var(--color-muted-foreground)] truncate">{t.chat_name || t.chat_id}</span>
+                <span className="min-w-0 break-words text-sm font-semibold text-foreground">{t.chat_name || t.chat_id}</span>
                 <span className="ml-auto text-[var(--color-muted-foreground)] tabular-nums shrink-0">
                   {formatTime(t.matched_at)}
                 </span>

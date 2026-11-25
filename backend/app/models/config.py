@@ -1,14 +1,21 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
-from app.core.config import SemanticTrigger
+from app.core.config import ChatRef, SemanticTrigger
 
 
 class ConfigUpdate(BaseModel):
     filter_mode: Optional[str] = None
-    add_chat: Optional[str] = None
+    add_chat: Optional[str] = None          # legacy: by display name
     remove_chat: Optional[str] = None
+    add_chat_ref: Optional[ChatRef] = None  # preferred: by (platform, chat_id)
+    remove_chat_ref: Optional[ChatRef] = None
+    sync_exclude_channels: Optional[bool] = None
+    add_sync_exclude: Optional[ChatRef] = None
+    add_sync_excludes: Optional[list[ChatRef]] = None
+    remove_sync_exclude: Optional[ChatRef] = None
+    keep_raw_text: Optional[bool] = None
     add_vip: Optional[str] = None
     remove_vip: Optional[str] = None
     budget: Optional[int] = None
@@ -22,6 +29,9 @@ class ConfigUpdate(BaseModel):
     llm_model: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_embedding_model: Optional[str] = None
+    qq_source: Optional[Literal["qce", "local"]] = None
+    qq_local_path: Optional[str] = None
+    qq_local_account: Optional[str] = None
     qq_enabled: Optional[bool] = None
     qq_host: Optional[str] = None
     qq_port: Optional[int] = None

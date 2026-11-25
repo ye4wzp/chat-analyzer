@@ -106,7 +106,7 @@ export default function Mentions() {
               <li key={`${c.platform}-${c.chat_id}`}>
                 <button onClick={() => setChat(c.platform, c.chat_id)} className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ${chatId === c.chat_id ? "bg-[var(--color-primary-subtle)] text-[var(--color-primary)]" : "hover:bg-[var(--color-card-elevated)]"}`}>
                   <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: PLATFORM_COLOR[c.platform] || "#94a3b8" }} />
-                  <span className="min-w-0 flex-1 truncate">{c.chat_name || c.chat_id}</span>
+                  <span className="min-w-0 flex-1 break-words font-medium">{c.chat_name || c.chat_id}</span>
                   <span className="text-xs tabular-nums text-[var(--color-muted-foreground)]">{c.n}</span>
                 </button>
               </li>
@@ -133,7 +133,7 @@ export default function Mentions() {
                 <li key={m.id} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
                   <div className="mb-1.5 flex flex-wrap items-center gap-2 text-xs text-[var(--color-muted-foreground)]">
                     <button onClick={() => navigate(`/chats?platform=${m.platform}&chat_id=${encodeURIComponent(m.chat_id)}`)} className="font-medium text-[var(--color-foreground)] hover:text-[var(--color-primary)]">{m.chat_name}</button>
-                    <span className="rounded bg-[var(--color-success-subtle)] px-1.5 py-0.5 text-[10px] text-[var(--color-success)]">{PLATFORM_LABEL[m.platform] || m.platform}</span>
+                    <span className="rounded bg-[var(--color-success-subtle)] px-1.5 py-0.5 text-xs text-[var(--color-success)]">{PLATFORM_LABEL[m.platform] || m.platform}</span>
                     <span>{m.sender_name || "?"}</span>
                     <span className="ml-auto tabular-nums">{formatTime(m.timestamp)}</span>
                   </div>

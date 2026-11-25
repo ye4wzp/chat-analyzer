@@ -29,7 +29,7 @@ export function BackupsPanel() {
 
   const create = async () => {
     setCreating(true)
-    const id = toast.loading("备份中...（VACUUM + gzip 一般 2-15 秒）")
+    const id = toast.loading("备份中...（只复制原始消息与你的标注，统计等派生数据会在恢复时重建）")
     try {
       const info = await fetchAPI<Backup>("/backups", { method: "POST" })
       toast.success(`已备份 ${info.size_human}`, { id })
@@ -66,8 +66,8 @@ export function BackupsPanel() {
             数据库备份
           </h3>
           <p className="text-xs text-[var(--color-muted-foreground)] mt-1 leading-relaxed">
-            每次同步前自动快照 chat.db（gzip 压缩，最多保留 5 份）。手动还原：
-            <code className="font-mono mx-1">gunzip -c xxx.bak.gz &gt; ~/.chat-analyzer/data/chat.db</code>
+            每次同步前自动备份（gzip，最多保留 5 份）。只包含不可再生的部分——消息、知识点、标签、人物、待办、报告；统计、资源、全文索引在恢复后自动重建。还原：停服务 →
+            <code className="font-mono mx-1">gunzip -c xxx.bak.gz &gt; ~/.chat-analyzer/data/chat.db</code>→ 重启。
           </p>
         </div>
         <div className="flex gap-2 shrink-0">

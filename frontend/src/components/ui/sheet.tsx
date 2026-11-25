@@ -70,7 +70,7 @@ interface SheetHeaderProps {
 export function SheetHeader({ title, onClose, className, children }: SheetHeaderProps) {
   return (
     <div className={cn("flex items-center justify-between border-b border-[var(--color-border)] px-4 py-3 shrink-0", className)}>
-      <div className="text-sm font-semibold">{title ?? children}</div>
+      <div className="min-w-0 break-words text-base font-semibold">{title ?? children}</div>
       {onClose && (
         <button onClick={onClose} aria-label="关闭" className="rounded-md p-1 text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>

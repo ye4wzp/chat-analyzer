@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { ContactDossier } from "@/components/ContactDossier"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
 import {
   BookOpen, Check, Gift, Link2, ListChecks, Loader2, Menu, MessagesSquare, Plus, RefreshCw, Search,
-  Sparkles, Star, Tag as TagIcon, Users, X,
+  Sparkles, Star, Tag as TagIcon, UserRound, Users, X,
 } from "lucide-react"
-import { fetchAPI, getErrorMessage, type ContactListItem, type ContactProfile } from "@/lib/api"
+import { fetchAPI, getErrorMessage, type ContactListItem, type ContactProfile, type IdentityCandidate } from "@/lib/api"
 import { KIND_LABEL, PLATFORM_COLOR, PLATFORM_LABEL, chatTypeLabel } from "@/lib/constants"
 import { formatCount, formatDate, formatTime } from "@/lib/utils"
 import { useOnStatsDone, useStatsFilters } from "@/hooks/useStatsFilters"
@@ -29,7 +30,7 @@ function Avatar({ platform, name, size = "h-11 w-11 text-sm" }: { platform: stri
 function TagChip({ name, color, onRemove, muted }: { name: string; color: string | null; onRemove?: () => void; muted?: boolean }) {
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${muted ? "border-dashed opacity-70" : ""}`}
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${muted ? "border-dashed opacity-70" : ""}`}
       style={{ borderColor: color || "var(--color-border)", color: color || "var(--color-foreground)", background: color ? `color-mix(in oklch, ${color} 14%, transparent)` : "var(--color-card-elevated)" }}
     >
       {name}
@@ -41,9 +42,9 @@ function TagChip({ name, color, onRemove, muted }: { name: string; color: string
 function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-card-elevated)] p-3">
-      <p className="text-[11px] text-[var(--color-muted-foreground)]">{label}</p>
+      <p className="text-xs text-[var(--color-muted-foreground)]">{label}</p>
       <p className="mt-0.5 text-lg font-semibold tabular-nums">{value}</p>
-      {sub && <p className="text-[11px] text-[var(--color-muted-foreground)]">{sub}</p>}
+      {sub && <p className="text-xs text-[var(--color-muted-foreground)]">{sub}</p>}
     </div>
   )
 }
@@ -101,16 +102,18 @@ function ContactList({ items, loading, selected, onSelect, search, setSearch, ch
               <Avatar platform={c.platform} name={c.chat_name || c.chat_id} size="h-10 w-10 text-sm" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
-                  <p className="truncate text-sm font-medium">{c.chat_name || c.chat_id}</p>
+                  <p className="conversation-name">{c.canonical_name || c.chat_name || c.chat_id}</p>
                   {c.is_vip && <Star className="h-3 w-3 shrink-0 fill-[var(--color-warning)] text-[var(--color-warning)]" />}
                 </div>
-                <p className="truncate text-[11px] text-[var(--color-muted-foreground)]">
+                {c.canonical_name && c.chat_name && c.canonical_name !== c.chat_name && <p className="text-xs text-muted-foreground break-words">{c.chat_name}</p>}
+                {c.local_note && <p className="truncate text-xs text-foreground" title={c.local_note}>{c.local_note}</p>}
+                <p className="text-xs text-muted-foreground">
                   {PLATFORM_LABEL[c.platform] || c.platform} · {chatTypeLabel(c.chat_type)} · {formatCount(c.messages)} 条 · {formatDate(c.last_ts)}
                 </p>
                 {c.tags.length > 0 && (
                   <div className="mt-1 flex flex-wrap gap-1">
                     {c.tags.slice(0, 3).map(t => <TagChip key={t.tag_id} name={t.name} color={t.color} />)}
-                    {c.tags.length > 3 && <span className="text-[10px] text-[var(--color-muted-foreground)]">+{c.tags.length - 3}</span>}
+                    {c.tags.length > 3 && <span className="text-xs text-[var(--color-muted-foreground)]">+{c.tags.length - 3}</span>}
                   </div>
                 )}
               </div>
@@ -118,14 +121,124 @@ function ContactList({ items, loading, selected, onSelect, search, setSearch, ch
           )
         })}
       </div>
-      <div className="shrink-0 border-t border-[var(--color-border)] px-4 py-2 text-center text-[11px] text-[var(--color-muted-foreground)]">{items.length} 个联系人</div>
+      <div className="shrink-0 border-t border-[var(--color-border)] px-4 py-2 text-center text-xs text-[var(--color-muted-foreground)]">{items.length} 个联系人</div>
     </div>
   )
 }
 
 /* ------------------------------------------------------------------------ */
 
-function ProfileView({ profile, onChanged }: { profile: ContactProfile; onChanged: () => void }) {
+function IdentityCard({ profile, aliasName, setAliasName, call }: {
+  profile: ContactProfile
+  aliasName: string
+  setAliasName: (v: string) => void
+  call: (label: string, fn: () => Promise<unknown>) => Promise<void>
+}) {
+  const navigate = useNavigate()
+  const [picked, setPicked] = useState<Set<string>>(() => new Set(profile.identity_candidates.filter(c => !c.already_linked).map(c => c.value)))
+  const person = profile.person
+  const fp = profile.footprint
+  const candidates = profile.identity_candidates
+
+  const link = () => {
+    if (!aliasName.trim()) return
+    const senders = candidates.filter(c => picked.has(c.value) && !c.already_linked).map(c => ({
+      platform: c.platform, kind: c.kind, value: c.value, chat_id: c.chat_id, display_name: c.display_name,
+    }))
+    void call("关联身份...", () => fetchAPI("/persons/link-chat", {
+      method: "POST",
+      body: JSON.stringify({ name: aliasName.trim(), platform: profile.platform, chat_id: profile.chat_id, chat_name: profile.chat_name || null, senders }),
+    }))
+  }
+  const addCandidate = (c: IdentityCandidate) => {
+    if (!person) return
+    void call("关联群内身份...", () => fetchAPI(`/persons/${person.id}/identities`, {
+      method: "POST",
+      body: JSON.stringify({ platform: c.platform, kind: c.kind, value: c.value, chat_id: c.chat_id, display_name: c.display_name }),
+    }))
+  }
+
+  return (
+    <ChartCard
+      title="这个人"
+      subtitle={person ? `已识别为「${person.name}」，跨 ${new Set(fp?.identities.map(i => i.platform)).size} 个平台 · ${fp?.total_messages.toLocaleString()} 条` : "把私聊、群内昵称、其他平台账号归到同一个人"}
+      right={person && <UserRound className="h-4 w-4 text-[var(--color-muted-foreground)]" />}
+    >
+      {!person ? (
+        <div className="space-y-3">
+          <form onSubmit={e => { e.preventDefault(); link() }} className="flex gap-2">
+            <Input value={aliasName} onChange={e => setAliasName(e.target.value)} placeholder={`统一姓名，如「${profile.chat_name || "张三"}」`} className="h-9" />
+            <Button type="submit" size="sm" variant="outline" disabled={!aliasName.trim()}><Plus className="mr-1 h-3.5 w-3.5" />建档</Button>
+          </form>
+          {candidates.length > 0 && (
+            <div className="rounded-lg border border-dashed border-[var(--color-border)] p-3">
+              <p className="mb-2 text-xs text-[var(--color-muted-foreground)]">可能是同一个人的群内身份（建档时一起关联）：</p>
+              <ul className="space-y-1.5 text-xs">
+                {candidates.map(c => (
+                  <li key={c.value} className="flex items-center gap-2">
+                    <input type="checkbox" checked={picked.has(c.value)} disabled={c.already_linked} onChange={e => setPicked(prev => { const n = new Set(prev); if (e.target.checked) n.add(c.value); else n.delete(c.value); return n })} className="accent-[var(--color-primary)]" />
+                    <span className="font-medium">{c.display_name || c.value}</span>
+                    <span className="text-[var(--color-muted-foreground)]">在 {c.groups} 个群发过 {c.messages.toLocaleString()} 条 · {c.reason}</span>
+                    {c.already_linked && <span className="ml-auto text-[var(--color-warning)]">已属于其他人</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <p className="mb-1.5 text-xs font-medium text-[var(--color-muted-foreground)]">身份</p>
+            <ul className="space-y-1.5 text-xs">
+              {fp?.identities.map(i => (
+                <li key={i.id} className="flex items-center gap-2 rounded-md border border-[var(--color-border)] px-2 py-1.5">
+                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: PLATFORM_COLOR[i.platform] || "#94a3b8" }} />
+                  <span>{PLATFORM_LABEL[i.platform] || i.platform}</span>
+                  <span className="rounded bg-[var(--color-secondary)] px-1.5 py-0.5 text-xs">{i.kind === "chat" ? "私聊" : i.chat_id ? "群内昵称（单群）" : "群内昵称"}</span>
+                  <span className="truncate font-mono text-[var(--color-muted-foreground)]" title={i.value}>{i.display_name || i.value}</span>
+                  {i.source !== "manual" && <span className="text-xs text-[var(--color-text-faint)]">{i.source === "auto" ? "自动" : "迁移"}</span>}
+                  <button onClick={() => call("移除身份...", () => fetchAPI(`/persons/${person.id}/identities/${i.id}`, { method: "DELETE" }))} className="ml-auto rounded p-0.5 text-[var(--color-muted-foreground)] hover:text-[var(--color-destructive)]" aria-label="移除身份"><X className="h-3 w-3" /></button>
+                </li>
+              ))}
+            </ul>
+            {candidates.some(c => !c.already_linked) && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {candidates.filter(c => !c.already_linked).map(c => (
+                  <button key={c.value} onClick={() => addCandidate(c)} className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-muted-foreground)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]" title={c.reason}>
+                    <Plus className="h-3 w-3" />群内「{c.display_name || c.value}」· {c.groups} 群
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {fp && fp.groups.length > 0 && (
+            <div>
+              <p className="mb-1.5 text-xs font-medium text-[var(--color-muted-foreground)]">在这些群里说话</p>
+              <ul className="space-y-1 text-xs">
+                {fp.groups.slice(0, 8).map(g => (
+                  <li key={`${g.platform}-${g.chat_id}`}>
+                    <button onClick={() => navigate(`/members?platform=${g.platform}&chat_id=${encodeURIComponent(g.chat_id)}`)} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-[var(--color-card-elevated)]">
+                      <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: PLATFORM_COLOR[g.platform] || "#94a3b8" }} />
+                      <span className="min-w-0 flex-1 break-words">{g.chat_name || g.chat_id}</span>
+                      <span className="tabular-nums text-[var(--color-muted-foreground)]">{g.n.toLocaleString()} 条 · {g.months} 个月 · 最近 {formatDate(g.last_ts)}</span>
+                    </button>
+                  </li>
+                ))}
+                {fp.groups.length > 8 && <li className="px-2 text-xs text-[var(--color-muted-foreground)]">还有 {fp.groups.length - 8} 个群</li>}
+              </ul>
+            </div>
+          )}
+          {fp && fp.groups.length === 0 && fp.identities.every(i => i.kind === "chat") && (
+            <p className="text-xs text-[var(--color-muted-foreground)]">还没有关联群内身份，所以看不到他在群里的发言。{candidates.length ? "上面有候选可以一键加上。" : ""}</p>
+          )}
+        </div>
+      )}
+    </ChartCard>
+  )
+}
+
+function ProfileView({ profile, onChanged, onDossierDirtyChange }: { profile: ContactProfile; onChanged: () => void; onDossierDirtyChange: (dirty: boolean) => void }) {
   const navigate = useNavigate()
   const [summarizing, setSummarizing] = useState(false)
   const [suggesting, setSuggesting] = useState(false)
@@ -164,7 +277,7 @@ function ProfileView({ profile, onChanged }: { profile: ContactProfile; onChange
           <Avatar platform={profile.platform} name={profile.chat_name || profile.chat_id} size="h-14 w-14 text-xl" />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate text-xl font-semibold">{profile.chat_name || profile.chat_id}</h1>
+              <h1 className="break-words text-xl font-semibold">{profile.chat_name || profile.chat_id}</h1>
               {profile.canonical_name && profile.canonical_name !== profile.chat_name && (
                 <span className="rounded-md bg-[var(--color-secondary)] px-1.5 py-0.5 text-xs text-[var(--color-muted-foreground)]">= {profile.canonical_name}</span>
               )}
@@ -196,15 +309,18 @@ function ProfileView({ profile, onChanged }: { profile: ContactProfile; onChange
                 onSubmit={e => { e.preventDefault(); if (!newTag.trim()) return; void call("添加标签...", () => fetchAPI(`/contacts/${key}/tags`, { method: "POST", body: JSON.stringify({ name: newTag.trim() }) })); setNewTag("") }}
                 className="inline-flex items-center"
               >
-                <input value={newTag} onChange={e => setNewTag(e.target.value)} placeholder="+ 标签" className="h-6 w-20 rounded-full border border-dashed border-[var(--color-border)] bg-transparent px-2 text-[11px] outline-none focus:border-[var(--color-primary)]" />
+                <input value={newTag} onChange={e => setNewTag(e.target.value)} placeholder="+ 标签" className="h-6 w-20 rounded-full border border-dashed border-[var(--color-border)] bg-transparent px-2 text-xs outline-none focus:border-[var(--color-primary)]" />
               </form>
-              <button
+              {profile.chat_type === "private" ? <button
+                onClick={() => document.getElementById("contact-dossier")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]"
+              ><Sparkles className="h-3 w-3" />全量标签与备注</button> : <button
                 onClick={() => call("AI 分析标签...", () => fetchAPI(`/contacts/${key}/tags/suggest`, { method: "POST" }), setSuggesting)}
                 disabled={suggesting}
-                className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border)] px-2 py-0.5 text-[11px] text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)] disabled:opacity-50"
+                className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)] disabled:opacity-50"
               >
                 {suggesting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />} AI 打标签
-              </button>
+              </button>}
             </div>
           </div>
         </div>
@@ -238,8 +354,10 @@ function ProfileView({ profile, onChanged }: { profile: ContactProfile; onChange
         />
       </div>
 
+      {profile.chat_type === "private" && <ContactDossier key={key} platform={profile.platform} chatId={profile.chat_id} legacyNotes={profile.person?.notes} tags={confirmed.map(t => ({ id: t.tag_id, name: t.name }))} onChanged={onChanged} onDirtyChange={onDossierDirtyChange} />}
+
       <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-        <ChartCard title="AI 印象" subtitle={profile.summary_generated_at ? `生成于 ${formatTime(profile.summary_generated_at)}` : "基于最近 100 条消息"} right={
+        <ChartCard title={profile.chat_type === "private" ? "聊天摘要（非已确认档案）" : "AI 印象"} subtitle={profile.summary_generated_at ? `生成于 ${formatTime(profile.summary_generated_at)}` : "基于最近 100 条消息"} right={
           <Button variant="outline" size="sm" disabled={summarizing} onClick={() => call("AI 总结中...", () => fetchAPI(`/chats/${key}/profile/summarize`, { method: "POST" }), setSummarizing)}>
             {summarizing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
             {profile.summary ? "重新生成" : "生成"}
@@ -257,17 +375,17 @@ function ProfileView({ profile, onChanged }: { profile: ContactProfile; onChange
             <button onClick={() => navigate("/knowledge")} className="rounded-lg border border-[var(--color-border)] p-3 hover:bg-[var(--color-card-elevated)]">
               <BookOpen className="mx-auto h-4 w-4 text-[var(--color-info)]" />
               <p className="mt-1 text-lg font-semibold tabular-nums">{profile.knowledge.length}</p>
-              <p className="text-[11px] text-[var(--color-muted-foreground)]">知识点</p>
+              <p className="text-xs text-[var(--color-muted-foreground)]">知识点</p>
             </button>
             <button onClick={() => navigate("/todos")} className="rounded-lg border border-[var(--color-border)] p-3 hover:bg-[var(--color-card-elevated)]">
               <ListChecks className="mx-auto h-4 w-4 text-[var(--color-warning)]" />
               <p className="mt-1 text-lg font-semibold tabular-nums">{profile.todos.open}<span className="text-xs text-[var(--color-muted-foreground)]">/{profile.todos.total}</span></p>
-              <p className="text-[11px] text-[var(--color-muted-foreground)]">待办（未完成）</p>
+              <p className="text-xs text-[var(--color-muted-foreground)]">待办（未完成）</p>
             </button>
             <button onClick={() => navigate(`/resources?platform=${profile.platform}&chat_id=${encodeURIComponent(profile.chat_id)}`)} className="rounded-lg border border-[var(--color-border)] p-3 hover:bg-[var(--color-card-elevated)]">
               <Link2 className="mx-auto h-4 w-4 text-[var(--color-success)]" />
               <p className="mt-1 text-lg font-semibold tabular-nums">{resourceTotal}</p>
-              <p className="text-[11px] text-[var(--color-muted-foreground)]">链接 / 文件</p>
+              <p className="text-xs text-[var(--color-muted-foreground)]">链接 / 文件</p>
             </button>
           </div>
           {(profile.resources.redpacket || profile.resources.transfer) ? (
@@ -312,36 +430,7 @@ function ProfileView({ profile, onChanged }: { profile: ContactProfile; onChange
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
-        <ChartCard title="跨平台身份" subtitle="把多个平台的账号合并成同一个人">
-          <form
-            onSubmit={e => {
-              e.preventDefault()
-              if (!aliasName.trim()) return
-              void call("保存别名...", () => fetchAPI("/aliases", {
-                method: "POST",
-                body: JSON.stringify({ canonical_name: aliasName.trim(), platform: profile.platform, platform_id: profile.chat_id, platform_name: profile.chat_name || null }),
-              }))
-            }}
-            className="flex gap-2"
-          >
-            <Input value={aliasName} onChange={e => setAliasName(e.target.value)} placeholder="统一姓名，如「张三」" className="h-9" />
-            <Button type="submit" size="sm" variant="outline"><Plus className="mr-1 h-3.5 w-3.5" />关联</Button>
-          </form>
-          {profile.aliases.length > 0 ? (
-            <ul className="mt-3 space-y-1.5 text-xs">
-              {profile.aliases.map(a => (
-                <li key={a.id} className="flex items-center gap-2 rounded-md border border-[var(--color-border)] px-2 py-1.5">
-                  <span className="h-2 w-2 rounded-full" style={{ background: PLATFORM_COLOR[a.platform] || "#94a3b8" }} />
-                  <span>{PLATFORM_LABEL[a.platform] || a.platform}</span>
-                  <span className="truncate font-mono text-[var(--color-muted-foreground)]">{a.platform_name || a.platform_id}</span>
-                  <button onClick={() => call("删除关联...", () => fetchAPI(`/aliases/${a.id}`, { method: "DELETE" }))} className="ml-auto rounded p-0.5 text-[var(--color-muted-foreground)] hover:text-[var(--color-destructive)]"><X className="h-3 w-3" /></button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-3 text-xs text-[var(--color-muted-foreground)]">尚未关联其他平台账号。</p>
-          )}
-        </ChartCard>
+        <IdentityCard profile={profile} aliasName={aliasName} setAliasName={setAliasName} call={call} />
 
         <ChartCard title="最近消息" right={
           <button onClick={() => navigate(`/chats?platform=${profile.platform}&chat_id=${encodeURIComponent(profile.chat_id)}`)} className="text-xs text-[var(--color-muted-foreground)] hover:text-[var(--color-primary)]">全部</button>
@@ -369,7 +458,7 @@ function ProfileView({ profile, onChanged }: { profile: ContactProfile; onChange
           </div>
         </ChartCard>
       )}
-      <p className="text-[11px] text-[var(--color-muted-foreground)]">
+      <p className="text-xs text-[var(--color-muted-foreground)]">
         类型说明：{profile.kinds.slice(0, 6).map(k => `${KIND_LABEL[k.kind] || k.kind} ${formatCount(k.count)}`).join(" · ")}
       </p>
     </div>
@@ -390,6 +479,8 @@ export default function Contacts() {
   const [sort, setSort] = useState("messages")
   const [profile, setProfile] = useState<ContactProfile | null>(null)
   const [profileLoading, setProfileLoading] = useState(false)
+  const [dossierDirty, setDossierDirty] = useState(false)
+  const profileRequest = useRef(0)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [error, setError] = useState("")
 
@@ -413,12 +504,14 @@ export default function Contacts() {
   useEffect(() => { loadList() }, [loadList])
 
   const loadProfile = useCallback(() => {
+    const request = ++profileRequest.current
     if (!selected) { setProfile(null); return }
+    setProfile(p => p?.platform === selected.platform && p?.chat_id === selected.chat_id ? p : null)
     setProfileLoading(true)
     fetchAPI<ContactProfile>(`/contacts/${selected.platform}/${encodeURIComponent(selected.chat_id)}/profile${filters.account ? `?account=${encodeURIComponent(filters.account)}` : ""}`)
-      .then(setProfile)
-      .catch(e => { toast.error(getErrorMessage(e)); setProfile(null) })
-      .finally(() => setProfileLoading(false))
+      .then(p => { if (request === profileRequest.current) setProfile(p) })
+      .catch(e => { if (request === profileRequest.current) { toast.error(getErrorMessage(e)); setProfile(null) } })
+      .finally(() => { if (request === profileRequest.current) setProfileLoading(false) })
   }, [selected, filters.account])
 
   useEffect(() => { loadProfile() }, [loadProfile])
@@ -435,10 +528,13 @@ export default function Contacts() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return items
-    return items.filter(c => (c.chat_name || c.chat_id).toLowerCase().includes(q) || c.tags.some(t => t.name.toLowerCase().includes(q)) || (c.canonical_name || "").toLowerCase().includes(q))
+    return items.filter(c => (c.chat_name || c.chat_id).toLowerCase().includes(q) || (c.local_note || "").toLowerCase().includes(q) || c.tags.some(t => t.name.toLowerCase().includes(q)) || (c.canonical_name || "").toLowerCase().includes(q))
   }, [items, search])
 
   const select = (c: ContactListItem) => {
+    if (selected?.platform === c.platform && selected.chat_id === c.chat_id) return
+    if (dossierDirty && !window.confirm("有尚未保存的备注或审核选择，切换联系人将丢弃这些编辑。确定切换？")) return
+    setProfile(null)
     setPickerOpen(false)
     setParams(prev => { const p = new URLSearchParams(prev); p.set("platform", c.platform); p.set("chat_id", c.chat_id); return p }, { replace: true })
   }
@@ -476,7 +572,7 @@ export default function Contacts() {
           ) : profileLoading && !profile ? (
             <div className="flex items-center justify-center py-20"><Loader2 className="h-5 w-5 animate-spin text-[var(--color-muted-foreground)]" /></div>
           ) : profile ? (
-            <ProfileView profile={profile} onChanged={onChanged} />
+            <ProfileView profile={profile} onChanged={onChanged} onDossierDirtyChange={setDossierDirty} />
           ) : (
             <p className="p-10 text-center text-sm text-[var(--color-muted-foreground)]">从左侧选择一个联系人</p>
           )}

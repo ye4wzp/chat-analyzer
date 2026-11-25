@@ -1,3 +1,4 @@
+import json
 import asyncio
 from pathlib import Path
 
@@ -30,17 +31,23 @@ def init():
 
 @cli.command()
 @click.option("--new-only", is_flag=True, help="仅同步新消息")
-def sync(new_only: bool):
+@click.option("--mode", type=click.Choice(["incremental", "full", "repair"]), default=None)
+def sync(new_only: bool, mode: str | None):
     """同步微信聊天数据"""
     from app.services.sync.wechat import sync_sessions, sync_new_messages
 
     console.print("[bold]正在同步微信数据...[/bold]")
 
     try:
-        if new_only:
+        if new_only and mode is None:
             count = asyncio.run(sync_new_messages())
         else:
-            count = asyncio.run(sync_sessions())
+            from app.services.sync.result import result_status
+            result = asyncio.run(sync_sessions(mode=mode or "incremental"))
+            count = result["imported"]
+            if result_status(result) != "done":
+                console.print(f"[yellow]同步未完整：{json.dumps(result, ensure_ascii=False)}[/yellow]")
+                return
 
         if count > 0:
             console.print(f"[green]✓ 同步完成，新增 {count} 条消息[/green]")
@@ -183,14 +190,11 @@ def analyze(chat: str | None, since: str | None, until: str | None, limit: int):
                 conditions.append("chat_name = ?")
                 params.append(chat)
             else:
-                chat_filter = cfg.chat_filter
-                if chat_filter.chats:
-                    placeholders = ",".join("?" * len(chat_filter.chats))
-                    if chat_filter.mode == "whitelist":
-                        conditions.append(f"chat_name IN ({placeholders})")
-                    else:  # blacklist
-                        conditions.append(f"chat_name NOT IN ({placeholders})")
-                    params.extend(chat_filter.chats)
+                from app.core.runners import chat_filter_clause
+                clause, clause_params = chat_filter_clause(cfg.chat_filter, alias="messages")
+                if clause:
+                    conditions.append(clause)
+                    params.extend(clause_params)
 
             add_time_filters(conditions, params, "timestamp", since, until)
 

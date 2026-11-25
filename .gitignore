@@ -16,8 +16,12 @@ dist/
 .idea/
 .vscode/
 
-# Local data
+# Local data & secrets
+.env
+.env.*
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 *.log

@@ -15,8 +15,8 @@ export function ImportTab({ config, onConfigChange }: Props) {
   const { run, running } = useTaskRunner()
   const syncingWechat = running.has("sync_wechat")
 
-  const syncWechat = () => run({
-    start: () => fetchAPI<{ task_id: string }>("/sync/wechat", { method: "POST" }),
+  const syncWechat = (mode: "incremental" | "full" | "repair") => run({
+    start: () => fetchAPI<{ task_id: string }>("/sync/wechat", { method: "POST", body: JSON.stringify({ mode }) }),
     taskType: "sync_wechat",
     loadingText: "微信同步启动中...",
   })
@@ -35,13 +35,17 @@ export function ImportTab({ config, onConfigChange }: Props) {
               通过 wx-cli 同步本地微信会话和历史消息
             </p>
           </div>
-          <Button size="sm" onClick={() => void syncWechat()} disabled={syncingWechat}>
+          <Button size="sm" onClick={() => void syncWechat("incremental")} disabled={syncingWechat}>
             {syncingWechat ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
-            立即同步
+            同步新增
           </Button>
         </div>
+        <div className="mt-3 flex gap-2">
+          <Button size="sm" variant="outline" disabled={syncingWechat} onClick={() => void syncWechat("full")}>全量读取</Button>
+          <Button size="sm" variant="outline" disabled={syncingWechat} onClick={() => void syncWechat("repair")}>检查历史补缺</Button>
+        </div>
         <p className="mt-3 text-xs text-[var(--color-muted-foreground)] leading-relaxed">
-          需要本地已安装 <code className="font-mono">wx</code> 命令行工具并登录微信。
+          全量读取和补缺会回查历史及现有本机缓存，保留已有记录，不代表恢复已删除或其他设备独有的历史。需要本地已安装 <code className="font-mono">wx</code> 命令行工具并登录微信。
         </p>
       </div>
 

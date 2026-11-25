@@ -10,16 +10,18 @@
 
 ## ✨ Features
 
-- **Multi-platform aggregation** — WeChat (wx-cli), QQ (NapCat + QCE), and Telegram (Telethon account API) messages land in a single SQLite database; platform is just a column, not a silo.
+- **Multi-platform aggregation** — WeChat (`wx-cli`), QQ (NapCat + QCE or `qq-cli` local DB), and Telegram (Telethon account API) messages land in a single SQLite database; platform is just a column, not a silo.
 - **LLM analysis pipeline** — split into conversation windows → in-window denoising → per-window extraction (knowledge / todo + urgency) → overall summary. Truly incremental: per-chat `analysis_state` checkpoints advance even on zero-yield runs and drain backlogs across runs; results persist in a review-batch table (restart-safe), nothing is saved until you confirm, and rejected items feed back into the prompt as negative examples.
-- **Knowledge base** — keyword / semantic search (embeddings, numpy-ranked), related-item recommendations, AI expansion, editing, Markdown export; exact + semantic dedup at save time, auto-embedding on save, stale-vector invalidation on edit, batch-level undo.
-- **Contact tagging** — the LLM reads a contact's history and auto-tags them (single / batch / scheduled), combining a preset tag library with free-form AI suggestions; pending-review queue, group insights, and one-click "add to denoise allowlist." Cross-platform, in-app only, never written back to WeChat.
-- **Cross-platform identity** — `contact_aliases` maps per-platform accounts to one person; VIP allowlisting resolves through aliases so display-name changes don't break it.
+- **Knowledge base** — keyword / semantic search (embeddings, numpy-ranked), related-item recommendations, AI expansion, editing, Markdown export; source-message inspection in review and detail views, exact dedup without silently dropping manually confirmed edits, auto-embedding on save, and batch-level undo.
+- **Contact dossier & full-history tagging** — full-history snapshot analysis (`contact_dossiers`) generates up to 5 tags plus short and detailed notes with verified source-message evidence; resumable batch runs, human review before activation, locked manual notes, and rejection memory. In-app only, never written back to WeChat / QQ / Telegram.
+- **Person-centric identity** — `persons / person_identities` unifies DMs, group nicknames, and cross-platform accounts into one person profile with candidate recommendations and cross-group activity history; VIP and pre-filter rules resolve through unified identities.
+- **Normalized ingestion & sync scope** — messages normalize into cross-platform `kind` + timezone offset at ingest; configurable sync exclusions (Telegram channels excluded by default), WeChat Official Account article archiving, resumable sync task journal (`data/sync-tasks.db`), and asset-focused backups.
 - **To-do board + reminders** — aggregates to-dos produced by analysis, sorted by urgency with check-off completion; optional scheduled macOS reminders for open urgent items.
 - **Triggers + inbox** — keyword triggers (FTS5 full-text index) plus semantic triggers ("notify me when people talk about renovations"); matches land in an inbox with macOS notifications.
+- **Scoped Ask & cursor search** — filter Q&A and search by platform, chat ID, and date range, expand surrounding message context on citations, and paginate cleanly via `(timestamp, id)` cursors.
 - **Scheduler** — sync (WeChat / QQ / Telegram, serialized against DB contention), auto-analyze, auto-tag, and to-do reminders; run state lives in SQLite with uniform UTC timestamps.
 - **Cool Slate design system** — a dark-first "cool terminal" UI with one-click dark / light theme switch, monospace for IDs / timestamps / numbers, and a same-hue chart ramp.
-- **Security & usage** — binds `127.0.0.1` by default with an optional API token (required for LAN exposure); config file at `0600` perms with secrets redacted; daily token budget with in-flight reservations, embedding accounting, and per-task attribution; automatic SQLite backups.
+- **Security & usage** — binds `127.0.0.1` by default with an optional API token (required for LAN exposure); config file at `0600` perms with secrets redacted; daily token budget with in-flight reservations, embedding accounting, per-task attribution, and isolated Codex CLI ChatGPT auth; automatic SQLite backups.
 
 ## 🖼 Screenshots
 
@@ -36,10 +38,10 @@
 | Layer | Tech |
 |---|---|
 | Backend | Python 3.12 · FastAPI · Uvicorn · aiosqlite · httpx |
-| Frontend | React 18 · TypeScript · Vite · Tailwind CSS v4 · shadcn-style components · Recharts |
+| Frontend | React 19 · TypeScript · Vite · Tailwind CSS v4 · shadcn-style components · Recharts |
 | LLM | Claude CLI (`claude -p`) / Codex CLI / OpenAI-compatible API (LM Studio · Ollama) |
-| Database | SQLite (`~/.chat-analyzer/data/chat.db`) |
-| Connectors | WeChat: wx-cli ｜ QQ: NapCat + qq-chat-exporter ｜ Telegram: Telethon |
+| Database | SQLite (`~/.chat-analyzer/data/chat.db`) + sync task journal (`data/sync-tasks.db`) |
+| Connectors | WeChat: wx-cli ｜ QQ: NapCat + QCE / qq-cli local DB ｜ Telegram: Telethon |
 
 ## 🚀 Quick start
 

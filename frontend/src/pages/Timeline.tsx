@@ -7,7 +7,10 @@ import { Select } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetHeader } from "@/components/ui/sheet"
 import { Search, ChevronDown, Filter } from "lucide-react"
-import { PLATFORM_COLOR, PLATFORM_LABEL, PAGE_SIZE } from "@/lib/constants"
+import { PLATFORM_COLOR, PAGE_SIZE } from "@/lib/constants"
+
+import { ConversationMeta, ConversationSource } from "@/components/ConversationIdentity"
+import { conversationName } from "@/lib/conversation"
 
 function groupByDay(messages: Message[]) {
   const groups: { date: string; messages: Message[] }[] = []
@@ -54,7 +57,7 @@ interface FilterPanelProps {
 function FilterPanel({ chats, selectedChat, setSelectedChat, platform, setPlatform, since, setSince, until, setUntil, chatSearch, setChatSearch }: FilterPanelProps) {
   const filtered = chats.filter(c => {
     if (platform && c.platform !== platform) return false
-    if (chatSearch && !c.chat_name.toLowerCase().includes(chatSearch.toLowerCase())) return false
+    if (chatSearch && ![c.chat_name, c.chat_id].some(v => v?.toLowerCase().includes(chatSearch.toLowerCase()))) return false
     return true
   })
   return (
@@ -83,8 +86,8 @@ function FilterPanel({ chats, selectedChat, setSelectedChat, platform, setPlatfo
             className={`flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors text-left ${selectedChat?.platform === c.platform && selectedChat?.chat_id === c.chat_id ? "bg-[var(--color-primary)]/10 text-[var(--color-foreground)]" : "text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]"}`}
           >
             <span className="h-2 w-2 rounded-full shrink-0" style={{ background: PLATFORM_COLOR[c.platform] || "#6b7280" }} />
-            <span className="truncate flex-1">{c.chat_name}</span>
-            <span className="text-xs opacity-50 tabular-nums">{c.msg_count}</span>
+            <span className="min-w-0 flex-1"><strong className="conversation-name">{conversationName(c)}</strong><ConversationMeta chat={c} />{(!c.chat_name || c.chat_name === c.chat_id) && <span className="conversation-id">{c.chat_id}</span>}</span>
+            <span className="text-xs text-muted-foreground tabular-nums">{c.msg_count}</span>
           </button>
         ))}
       </div>
@@ -204,10 +207,8 @@ export default function Timeline() {
                         <Avatar name={m.sender_name || "?"} platform={m.platform} />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1 flex-wrap">
-                            <span className="text-sm font-medium">{m.sender_name}</span>
-                            <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: `${PLATFORM_COLOR[m.platform]}1a`, color: PLATFORM_COLOR[m.platform] }}>
-                              {PLATFORM_LABEL[m.platform] || m.platform}
-                            </span>
+                            {!selectedChat && <div className="basis-full"><ConversationSource chat={m} /></div>}
+                            <span className="text-sm font-semibold">{m.sender_name || m.sender_id || "未知发送者"}</span>
                             <span className="text-xs text-[var(--color-muted-foreground)] tabular-nums">{new Date(m.timestamp).toLocaleTimeString()}</span>
                           </div>
                           <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{m.content}</p>

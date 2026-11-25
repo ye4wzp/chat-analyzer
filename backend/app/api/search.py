@@ -1,7 +1,7 @@
 from typing import Optional
 
 import aiosqlite
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.core import database
 from app.core.time_utils import add_time_filters
@@ -18,7 +18,14 @@ async def search(
     until: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
+    chat_id: Optional[str] = None,
+    before_ts: Optional[str] = None,
+    before_id: Optional[int] = None,
 ):
+    if chat_id and not platform:
+        raise HTTPException(400, "指定会话时也需要指定平台")
+    if (before_ts is None) != (before_id is None):
+        raise HTTPException(400, "分页时间和消息 ID 必须同时提供")
     kw = keyword.strip()
     limit = max(1, min(limit, 500))
     # Trigram FTS needs >= 3 chars; shorter queries (common for 2-char Chinese
@@ -38,6 +45,12 @@ async def search(
         if category:
             conditions.append("a.category = ?")
             params.append(category)
+        if chat_id:
+            conditions.append("m.chat_id = ?")
+            params.append(chat_id)
+        if before_ts is not None:
+            conditions.append("(m.timestamp < ? OR (m.timestamp = ? AND m.id < ?))")
+            params.extend([before_ts, before_ts, before_id])
         add_time_filters(conditions, params, "m.timestamp", since, until)
         return " AND ".join(conditions), params
 
@@ -48,7 +61,8 @@ async def search(
                  FROM messages m
                  LEFT JOIN analysis_results a ON a.message_id = m.id
                  WHERE {where}
-                 ORDER BY m.timestamp DESC LIMIT ? OFFSET ?"""
+                 ORDER BY m.timestamp DESC, m.id DESC LIMIT ? OFFSET ?"""
+    offset = max(0, offset) if before_ts is None else 0
 
     async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         db.row_factory = aiosqlite.Row

@@ -13,7 +13,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:8000',
+      // Match CA_PORT used by scripts/start.command when the default port is taken.
+      '/api': process.env.CA_API || `http://127.0.0.1:${process.env.CA_PORT || 8000}`,
     },
   },
   build: {

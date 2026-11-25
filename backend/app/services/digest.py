@@ -78,13 +78,11 @@ async def _inactive_vips(db, msg_since: str) -> list[tuple[str, str | None]]:
     cfg = load_config()
     if not cfg.vip_contacts:
         return []
+    from app.services.persons import vip_identity_values
+
     inactive = []
     for name in cfg.vip_contacts:
-        alias_rows = await db.execute_fetchall(
-            "SELECT platform_id, platform_name FROM contact_aliases WHERE canonical_name = ?",
-            (name,),
-        )
-        idents = {name} | {v for r in alias_rows for v in (r["platform_id"], r["platform_name"]) if v}
+        idents = {name} | await vip_identity_values(db, [name])
         placeholders = ",".join("?" * len(idents))
         params = [*idents, *idents, *idents]
         rows = await db.execute_fetchall(

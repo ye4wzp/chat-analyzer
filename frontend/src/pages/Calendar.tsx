@@ -152,7 +152,7 @@ export default function Calendar() {
               <div key={k.label} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
                 <p className="text-xs text-[var(--color-muted-foreground)]">{k.label}</p>
                 <p className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: k.color }}>{k.value}</p>
-                {k.sub && <p className="text-[11px] text-[var(--color-muted-foreground)]">{k.sub}</p>}
+                {k.sub && <p className="text-xs text-[var(--color-muted-foreground)]">{k.sub}</p>}
               </div>
             ))}
           </div>
@@ -192,7 +192,7 @@ export default function Calendar() {
                       </p>
                     </li>
                   ))}
-                  {dayMessages.length >= 200 && <li className="py-2 text-center text-[11px] text-[var(--color-muted-foreground)]">仅显示前 200 条，完整内容请到时间线查看</li>}
+                  {dayMessages.length >= 200 && <li className="py-2 text-center text-xs text-[var(--color-muted-foreground)]">仅显示前 200 条，完整内容请到时间线查看</li>}
                 </ul>
               )}
             </ChartCard>

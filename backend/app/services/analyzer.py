@@ -44,7 +44,7 @@ CLASSIFY_PROMPT = """从以下对话中提取有价值的知识点，忽略闲�
 
 对每个知识点返回：
 - title: 简短标题（10字以内）
-- content: 知识点内容（保留原文关键信息）
+- content: 知识点内容（保留原文关键信息）；明确标注提问、建议、本人报告已解决、供应商声明或未结，区分处理步骤和实际结果，没有结果证据不得写已解决
 - category: "todo"（待办/行动项）或 "knowledge"（其他知识点）
 - tags: 标签数组（如 ["技术", "工具"]）
 - source_indices: 来源消息的 index 数组
@@ -217,6 +217,11 @@ class AnalyzerService:
         # task forever and wedge the scheduler via is_task_running.
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except asyncio.CancelledError:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+            raise
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
@@ -252,14 +257,9 @@ class AnalyzerService:
             return raw, len(prompt) // 3, len(raw) // 3
 
     async def _call_codex_cli(self, prompt: str, purpose: str = "") -> str | None:
-        """Call OpenAI Codex CLI in non-interactive mode.
-
-        We use --output-last-message to capture only the final assistant reply
-        (codex prints session metadata + a token-usage footer to stdout that
-        would otherwise need parsing). --skip-git-repo-check avoids requiring
-        a git repo at the cwd; -s read-only locks down filesystem access.
-        """
+        """Use ChatGPT-authenticated Codex quota for isolated text analysis."""
         import os
+        import signal
         import tempfile
 
         self.llm_call_count += 1
@@ -272,34 +272,65 @@ class AnalyzerService:
         # If user set a model, pass it through; otherwise rely on codex defaults.
         cmd = [
             "codex", "exec",
+            "--ignore-user-config", "--ephemeral",
             "--skip-git-repo-check",
             "-s", "read-only",
-            "--color", "never",
+            "--color", "never", "--json",
+            "-c", 'forced_login_method="chatgpt"',
+            "-c", 'model_provider="openai"',
+            "-c", 'web_search="disabled"',
+            "--disable", "shell_tool", "--disable", "apps",
+            "--disable", "plugins", "--disable", "hooks", "--disable", "multi_agent",
             "--output-last-message", out_path,
         ]
         if self.cfg.llm.model:
             cmd.extend(["-m", self.cfg.llm.model])
-        cmd.append(prompt)
+        # Keep private chat text out of process arguments; do not load project
+        # instructions/MCP servers or permit fallback to API-key billing.
+        cmd.append("-")
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "CODEX_THREAD_ID")}
+        work_dir = tempfile.TemporaryDirectory(prefix="chat_analyzer_codex_")
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                cwd=work_dir.name,
+                env=env,
+                start_new_session=os.name == "posix",
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+                stdout, stderr = await asyncio.wait_for(proc.communicate(prompt.encode("utf-8")), timeout=600)
+            except asyncio.CancelledError:
+                try:
+                    if os.name == "posix":
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    elif proc.returncode is None:
+                        proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+                raise
             except asyncio.TimeoutError:
-                proc.kill()
+                try:
+                    if os.name == "posix":
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    elif proc.returncode is None:
+                        proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
                 self.llm_fail_count += 1
                 self.last_llm_error = "codex CLI timeout after 600s"
                 return None
 
             if proc.returncode != 0:
                 self.llm_fail_count += 1
-                err = stderr.decode("utf-8", errors="replace")[-300:]
-                self.last_llm_error = f"codex CLI exit {proc.returncode}: {err}"
-                logger.warning("codex CLI failed: %s", err)
+                self.last_llm_error = f"codex CLI exit {proc.returncode}; check ChatGPT login and model access"
+                logger.warning("codex CLI failed with exit %s", proc.returncode)
                 return None
 
             try:
@@ -315,14 +346,22 @@ class AnalyzerService:
                 self.last_llm_error = "codex 返回空内容"
                 return None
 
-            # Codex doesn't expose token counts via this interface. Estimate
-            # for budget tracking parity with claude_cli.
+            usage = {}
+            for line in stdout.decode("utf-8", errors="replace").splitlines():
+                try:
+                    event = json.loads(line)
+                    if event.get("type") == "turn.completed":
+                        usage = event.get("usage") or {}
+                except (ValueError, AttributeError):
+                    continue
             await budget.record(
                 "codex_cli", self.cfg.llm.model or "codex-default",
-                len(prompt) // 3, len(out) // 3, purpose, self.task_id,
+                int(usage.get("input_tokens", len(prompt) // 3)),
+                int(usage.get("output_tokens", len(out) // 3)), purpose, self.task_id,
             )
             return out
         finally:
+            work_dir.cleanup()
             try:
                 os.unlink(out_path)
             except OSError:
@@ -487,7 +526,10 @@ class AnalyzerService:
                 logger.info("window %d/%d size=%d -> %d items", i+1, total, len(window), len(items))
                 for item in items:
                     item["batch_id"] = batch_id
-                    item["source_chat"] = window[0].get("chat_name", "") if window else ""
+                    if window:
+                        item["source_chat"] = window[0].get("chat_name", "")
+                        item["source_platform"] = window[0].get("platform")
+                        item["source_chat_id"] = window[0].get("chat_id")
                 all_items.extend(items)
             except TokenBudgetExceeded:
                 logger.warning("token budget exceeded at window %d/%d", i+1, total)

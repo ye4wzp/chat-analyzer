@@ -22,7 +22,7 @@ function Kpi({ label, value, sub, icon: Icon, color }: { label: string; value: s
         <Icon className="h-4 w-4" style={{ color }} />
       </div>
       <p className="mt-1 text-2xl font-semibold tabular-nums" style={{ color }}>{value}</p>
-      {sub && <p className="text-[11px] text-[var(--color-muted-foreground)]">{sub}</p>}
+      {sub && <p className="text-xs text-[var(--color-muted-foreground)]">{sub}</p>}
     </div>
   )
 }
@@ -127,7 +127,7 @@ export default function Members() {
             {groupsLoading && <option value="">加载群列表...</option>}
             {groups.map(g => (
               <option key={`${g.platform}|${g.chat_id}`} value={`${g.platform}|${g.chat_id}`}>
-                {g.chat_name || g.chat_id} · {formatCount(g.messages)}
+                {g.chat_name || g.chat_id} · {PLATFORM_LABEL[g.platform] || g.platform} · {formatCount(g.messages)}
               </option>
             ))}
           </Select>
@@ -148,7 +148,7 @@ export default function Members() {
                 {(current?.chat_name || "?").slice(0, 1)}
               </span>
               <div className="min-w-0">
-                <p className="truncate text-lg font-semibold">{current?.chat_name || chatId}</p>
+                <p className="break-words text-lg font-semibold">{current?.chat_name || chatId}</p>
                 <p className="text-xs text-[var(--color-muted-foreground)]">
                   {PLATFORM_LABEL[platform || ""] || platform} · {chatTypeLabel(current?.chat_type)} · {formatDate(current?.first_ts)} ~ {formatDate(current?.last_ts)}
                 </p>
@@ -215,7 +215,7 @@ export default function Members() {
                   {members.map((m, i) => (
                     <tr key={m.sender_key} className="border-b border-[var(--color-border)]/60 hover:bg-[var(--color-card-elevated)]">
                       <td className="py-2 pr-2 tabular-nums text-[var(--color-muted-foreground)]">{i + 1}</td>
-                      <td className="max-w-[200px] truncate py-2 pr-2 font-medium" title={m.sender_key}>{m.name}</td>
+                      <td className="max-w-[200px] break-words py-2 pr-2 font-medium" title={m.sender_key}>{m.name}</td>
                       <td className="py-2 pr-2 tabular-nums">{m.count.toLocaleString()}</td>
                       <td className="py-2 pr-2">
                         <div className="flex items-center gap-2">
@@ -240,7 +240,7 @@ export default function Members() {
           <div className="grid gap-4 xl:grid-cols-2">
             <ChartCard title="夜猫子榜" subtitle="0–6 点发言占比（≥20 条）">
               <RankList items={nightOwls} getLabel={m => m.name} getSub={m => `${m.count} 条`} getValue={m => m.night_ratio} max={100} getColor={() => "var(--chart-6)"} />
-              {nightOwls.length > 0 && <p className="mt-2 text-[11px] text-[var(--color-muted-foreground)]">数值为凌晨发言百分比</p>}
+              {nightOwls.length > 0 && <p className="mt-2 text-xs text-[var(--color-muted-foreground)]">数值为凌晨发言百分比</p>}
             </ChartCard>
             <ChartCard
               title="潜水成员"

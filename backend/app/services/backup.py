@@ -1,12 +1,14 @@
-"""SQLite backup using VACUUM INTO + gzip.
+"""SQLite backup: asset tables only, gzipped.
 
-Why: `chat.db` is the only persistent store (15万+ messages, knowledge, sync state
-tied together). A single bad write or crash mid-sync wipes everything. We snapshot
-before each sync and let the user restore manually (gunzip + cp) if needed.
+Why: `chat.db` mixes the one thing that can't be regenerated (messages, plus
+user decisions: knowledge, tags, persons, todos, reports) with derived data
+(stats rollups, extracted resources, FTS index) that is ~30% of the file and
+rebuilds itself on startup. Backups copy only the asset tables into a fresh
+database — schema taken verbatim from sqlite_master, rows via INSERT…SELECT
+inside one read transaction (a consistent WAL snapshot) — then gzip.
 
-VACUUM INTO is the safe online-backup primitive — it won't tear during concurrent
-WAL writers. We gzip the output because the DB is ~240MB raw but compresses to
-~40MB, so 5 backups stay under 250MB instead of 1.2GB.
+Restore: stop the server, `gunzip -c <backup> > data/chat.db`, start. Missing
+derived tables are recreated and rebuilt automatically.
 """
 from __future__ import annotations
 
@@ -44,11 +46,9 @@ async def create_backup() -> dict:
     raw_path = BACKUPS_DIR / f"chat.db.{ts}"
     final_path = BACKUPS_DIR / f"chat.db.{ts}{SUFFIX}"
 
-    # 1. Snapshot to raw_path. VACUUM INTO doesn't accept parameter binding for
-    #    the path, so we escape single quotes and inline.
-    escaped = str(raw_path).replace("'", "''")
-    async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
-        await db.execute(f"VACUUM INTO '{escaped}'")
+    # 1. Copy asset tables into a fresh database (off the event loop: the
+    #    messages copy is the bulk of the work and takes tens of seconds).
+    await asyncio.to_thread(copy_assets, DB_PATH, raw_path)
 
     # 2. Gzip the snapshot off the event loop — 240MB compress takes a few seconds
     #    and would block other API calls if run sync.
@@ -69,6 +69,57 @@ async def create_backup() -> dict:
         "size_human": _format_size(stat.st_size),
         "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
     }
+
+
+# Tables that are rebuilt from messages on startup and therefore not backed up.
+DERIVED_TABLES = {
+    "stats_daily", "stats_hourly", "stats_chats", "stats_sender", "stats_sender_hourly",
+    "resources", "stats_state", "consumers",
+}
+
+
+def _is_derived(name: str) -> bool:
+    return name in DERIVED_TABLES or name.startswith("messages_fts") or name.startswith("sqlite_")
+
+
+def copy_assets(src: Path, dest: Path) -> dict:
+    """Create `dest` containing only asset tables + their indexes. Synchronous;
+    call via asyncio.to_thread. Returns per-table row counts."""
+    import sqlite3
+
+    if dest.exists():
+        dest.unlink()
+    con = sqlite3.connect(str(src), timeout=60)
+    try:
+        con.execute("PRAGMA busy_timeout=60000")
+        escaped = str(dest).replace("'", "''")
+        con.execute(f"ATTACH DATABASE '{escaped}' AS bak")
+        con.execute("BEGIN")  # one read snapshot for every table below
+        objects = con.execute(
+            """SELECT type, name, tbl_name, sql FROM sqlite_master
+               WHERE sql IS NOT NULL AND type IN ('table', 'index')
+               ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, rowid"""
+        ).fetchall()
+        counts: dict[str, int] = {}
+        for typ, name, tbl, sql in objects:
+            if _is_derived(tbl) or _is_derived(name):
+                continue
+            # Re-point the DDL at the attached schema: "CREATE TABLE x" → "CREATE TABLE bak.x".
+            ddl = sql.replace("CREATE TABLE IF NOT EXISTS ", "CREATE TABLE ", 1)
+            ddl = ddl.replace("CREATE TABLE ", "CREATE TABLE bak.", 1) if typ == "table" else \
+                ddl.replace("CREATE INDEX IF NOT EXISTS ", "CREATE INDEX ", 1) \
+                   .replace("CREATE UNIQUE INDEX IF NOT EXISTS ", "CREATE UNIQUE INDEX ", 1) \
+                   .replace("CREATE INDEX ", "CREATE INDEX bak.", 1) \
+                   .replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX bak.", 1)
+            con.execute(ddl)
+            if typ == "table":
+                con.execute(f'INSERT INTO bak."{name}" SELECT * FROM main."{name}"')
+                counts[name] = con.execute(f'SELECT COUNT(*) FROM bak."{name}"').fetchone()[0]
+        con.execute("COMMIT")
+        con.execute("DETACH DATABASE bak")
+        return counts
+    finally:
+        con.close()
 
 
 def list_backups() -> list[dict]:

@@ -5,6 +5,7 @@ import { formatTime } from "@/lib/utils"
 import { useDetailPanel } from "@/lib/DetailPanelContext"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ChatScopeControls, type ChatScope } from "@/components/ChatScopeControls"
 
 interface Turn extends AskResponse {
   question: string
@@ -25,6 +26,13 @@ function SourceDetail({ s }: { s: AskSource }) {
         <p className="text-xs text-muted-foreground">{formatTime(s.timestamp)}</p>
       </div>
       <div className="rounded-lg p-4 text-sm leading-relaxed whitespace-pre-wrap bg-secondary">{s.content}</div>
+      {s.context && <div className="space-y-2">
+        <p className="text-xs text-muted-foreground">回答所依据的前后文（长消息会截取；边框标记命中消息）</p>
+        {s.context.map(m => <div key={m.id} className={`rounded p-3 text-sm ${m.id === s.message_id ? "border border-primary" : "bg-secondary"}`}>
+          <p className="text-xs text-muted-foreground">{m.sender_name || "?"} · {formatTime(m.timestamp)}</p>
+          <p className="whitespace-pre-wrap break-words">{m.content}</p>
+        </div>)}
+      </div>}
     </div>
   )
 }
@@ -64,6 +72,7 @@ export default function Ask() {
   const [input, setInput] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
+  const [scope, setScope] = useState<ChatScope>({ platform: "", chat_id: "", since: "", until: "" })
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -80,7 +89,7 @@ export default function Ask() {
       const history = turns.slice(-3).map(t => ({ question: t.question, answer: t.answer }))
       const res = await fetchAPI<AskResponse>("/ask", {
         method: "POST",
-        body: JSON.stringify({ question, history }),
+        body: JSON.stringify({ question, history, ...scope }),
       })
       setTurns(prev => [...prev, { question, ...res }])
     } catch (e) {
@@ -94,6 +103,10 @@ export default function Ask() {
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-y-auto p-6 md:p-8">
         <div className="mx-auto max-w-3xl space-y-6">
+          <div className="flex flex-wrap items-center gap-2">
+            <ChatScopeControls value={scope} disabled={loading} onChange={next => { setScope(next); setTurns([]); setError("") }} />
+            <p className="w-full text-xs text-muted-foreground">回答依据有限检索片段；切换范围会清空当前问答，避免混入其他会话。</p>
+          </div>
           {turns.length === 0 && !loading && (
             <div className="flex flex-col items-center gap-4 pt-16 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--color-primary)] text-[var(--color-primary-foreground)]">

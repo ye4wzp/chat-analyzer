@@ -32,7 +32,15 @@ async def sync_health(stale_days: int = 7):
                ORDER BY updated_at LIMIT 20""",
             (f"-{int(stale_days)} days",),
         )
-    return {"platforms": [dict(r) for r in platforms], "stale": [dict(r) for r in stale]}
+    from app.core.tasks import list_tasks
+    from app.services.sync.result import result_status
+    latest = {}
+    for task in list_tasks():
+        for platform in task.get("request", {}).get("platforms", []):
+            r = task.get("results", {}).get(platform)
+            status = result_status(r) if r and not task.get("resume_all") and task["status"] in ("done", "partial", "error") else task["status"]
+            latest[platform] = {"platform": platform, "status": status, "task_id": task["id"]}
+    return {"platforms": [dict(r) for r in platforms], "stale": [dict(r) for r in stale], "runs": list(latest.values())}
 
 
 SYNC_TASK_TYPES = ("sync_all", "sync_wechat", "sync_qq", "sync_telegram")
@@ -46,7 +54,7 @@ async def sync_wechat(body: SyncRequest = SyncRequest()):
     if any(is_task_running(t) for t in SYNC_TASK_TYPES):
         raise HTTPException(409, "同步任务正在运行")
     task_id = create_task("sync_wechat")
-    spawn_cancellable(task_id, run_sync(task_id, body.new_only))
+    spawn_cancellable(task_id, run_sync(task_id, body.new_only, mode=body.mode))
     return {"task_id": task_id}
 
 
@@ -57,86 +65,13 @@ async def sync_all(body: SyncRequest = SyncRequest()):
     if any(is_task_running(t) for t in SYNC_TASK_TYPES):
         raise HTTPException(409, "同步任务正在运行")
     task_id = create_task("sync_all")
-    spawn_cancellable(task_id, _run_sync_all(task_id, body.new_only))
+    spawn_cancellable(task_id, _run_sync_all(task_id, body.new_only, mode=body.mode))
     return {"tasks": [{"type": "sync_all", "task_id": task_id}]}
 
 
-async def _run_sync_all(task_id: str, new_only: bool):
-    """Run all platform syncs sequentially to avoid SQLite write contention."""
-    from app.core.tasks import _tasks
-    _tasks[task_id]["status"] = "running"
-    _tasks[task_id]["progress"] = 5
-    results: list[str] = []
-    failures: list[str] = []
-    successes = 0
-
-    try:
-        from app.services.backup import maybe_backup_before_sync
-        await maybe_backup_before_sync()
-    except Exception:
-        pass
-
-    # 1. WeChat
-    _tasks[task_id]["message"] = "正在同步微信..."
-    try:
-        from app.services.sync.wechat import sync_new_messages, sync_sessions
-        count = await (sync_new_messages() if new_only else sync_sessions())
-        results.append(f"微信 +{count}")
-        successes += 1
-    except Exception as e:
-        msg = f"微信失败: {e}"
-        results.append(msg)
-        failures.append(msg)
-
-    _tasks[task_id]["progress"] = 35
-
-    # 2. QQ
-    _tasks[task_id]["message"] = "正在同步 QQ..."
-    try:
-        from app.services.sync.qq_qce import sync_all as qq_sync
-        from app.core.tasks import make_progress as _mp
-        r = await qq_sync(progress=_mp(task_id))
-        qq_skipped = r.get("skipped") or []
-        if qq_skipped and not r["chats"]:
-            raise RuntimeError(f"{len(qq_skipped)} 个聊天全部失败: {'、'.join(qq_skipped[:3])}")
-        results.append(f"QQ +{r['imported']}" + (f"（跳过 {len(qq_skipped)}）" if qq_skipped else ""))
-        successes += 1
-    except Exception as e:
-        msg = f"QQ失败: {e}"
-        results.append(msg)
-        failures.append(msg)
-
-    _tasks[task_id]["progress"] = 70
-
-    # 3. Telegram
-    _tasks[task_id]["message"] = "正在同步 Telegram..."
-    try:
-        from app.services.sync.telegram_live import sync_all as tg_sync
-        from app.core.tasks import make_progress as _mp2
-        r = await tg_sync(progress=_mp2(task_id))
-        results.append(f"Telegram +{r['imported']}")
-        successes += 1
-    except Exception as e:
-        msg = f"Telegram失败: {e}"
-        results.append(msg)
-        failures.append(msg)
-
-    if successes:
-        try:
-            from app.services.triggers import scan_for_matches
-            await scan_for_matches()
-        except Exception:
-            pass
-
-    # Partial success is still success — 2/3 platforms landing data shouldn't
-    # render as a failed task. Only all-failed is an error.
-    _tasks[task_id].update(
-        status="done" if successes else "error",
-        progress=100,
-        message=("全量同步完成（部分失败）: " if failures and successes
-                 else "全量同步失败: " if failures
-                 else "全量同步完成: ") + " | ".join(results),
-    )
+async def _run_sync_all(task_id: str, new_only: bool, *, mode=None):
+    from app.core.runners import run_platforms_sync
+    await run_platforms_sync(task_id, ["wechat", "qq", "telegram"], new_only=new_only, mode=mode)
 
 
 @router.post("/api/import/qq")

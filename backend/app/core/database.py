@@ -29,6 +29,32 @@ CREATE INDEX IF NOT EXISTS idx_res_chat_ts ON resources(platform, chat_id, times
 """
 
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS wechat_articles (
+    url TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    source TEXT NOT NULL,
+    saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS wechat_archive_accounts (
+    chat_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_id INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS wechat_archive_items (
+    chat_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    error TEXT,
+    cooldown_until INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(chat_id, url)
+);
+CREATE INDEX IF NOT EXISTS idx_archive_url ON wechat_archive_items(url);
+CREATE INDEX IF NOT EXISTS idx_archive_cooldown ON wechat_archive_items(cooldown_until);
+CREATE INDEX IF NOT EXISTS idx_archive_pending ON wechat_archive_items(message_id DESC) WHERE error IS NULL;
+
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     platform TEXT NOT NULL,
@@ -45,6 +71,8 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE INDEX IF NOT EXISTS idx_wechat_archive_messages ON messages(chat_id, id)
+WHERE platform='wechat' AND chat_id GLOB 'gh_*';
 CREATE INDEX IF NOT EXISTS idx_msg_platform_ts ON messages(platform, timestamp);
 CREATE INDEX IF NOT EXISTS idx_msg_chat_ts ON messages(chat_id, timestamp);
 -- Standalone timestamp index for the unfiltered hot paths: the default message
@@ -52,17 +80,44 @@ CREATE INDEX IF NOT EXISTS idx_msg_chat_ts ON messages(chat_id, timestamp);
 -- which carries a platform/chat prefix to use the composite indexes above.
 CREATE INDEX IF NOT EXISTS idx_msg_ts ON messages(timestamp);
 
-CREATE TABLE IF NOT EXISTS contact_aliases (
+-- People, not chat windows. A person owns identities across platforms:
+--   kind='chat'   value=chat_id      — the private chat with them
+--   kind='sender' value=sender_key   — how they appear inside groups
+--                 chat_id=''         →  anywhere on that platform (WeChat has no
+--                 wxid in groups, so a nickname is platform-wide); a specific
+--                 group id scopes the identity to that group only.
+-- VIP / pre-filter / profile aggregation all resolve through this table.
+-- (Replaces contact_aliases; the old rows are migrated on first start.)
+CREATE TABLE IF NOT EXISTS persons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    canonical_name TEXT NOT NULL,
-    platform TEXT NOT NULL,
-    platform_id TEXT NOT NULL,
-    platform_name TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(platform, platform_id)
+    name TEXT NOT NULL,
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_alias_canonical ON contact_aliases(canonical_name);
+CREATE TABLE IF NOT EXISTS person_identities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    kind TEXT NOT NULL,               -- 'chat' | 'sender'
+    value TEXT NOT NULL,
+    chat_id TEXT NOT NULL DEFAULT '', -- sender scope; '' = platform-wide
+    display_name TEXT,
+    source TEXT DEFAULT 'manual',     -- 'manual' | 'auto' | 'migrated'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(platform, kind, value, chat_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_identity_person ON person_identities(person_id);
+
+-- One cursor per downstream consumer of the message log (stats rollups,
+-- kind backfill, ...). messages.id is monotonic, so "id > last" is a complete
+-- incremental cursor; core/consumers.py wraps the read-process-advance loop.
+CREATE TABLE IF NOT EXISTS consumers (
+    name TEXT PRIMARY KEY,
+    last_message_id INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE IF NOT EXISTS analysis_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +134,12 @@ CREATE TABLE IF NOT EXISTS analysis_results (
 CREATE INDEX IF NOT EXISTS idx_analysis_category ON analysis_results(category);
 CREATE INDEX IF NOT EXISTS idx_analysis_urgency ON analysis_results(urgency);
 
+CREATE TABLE IF NOT EXISTS qq_local_cursor (
+    account TEXT NOT NULL, chat_type TEXT NOT NULL, peer TEXT NOT NULL,
+    chat_id TEXT NOT NULL, ts INTEGER NOT NULL, msg_id INTEGER NOT NULL,
+    PRIMARY KEY(account, chat_type, peer)
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
     platform TEXT NOT NULL,
     chat_id TEXT NOT NULL,
@@ -86,6 +147,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
     last_timestamp DATETIME,
     -- 旧历史回补断点（页码）。NULL = 该会话历史已翻到底。
     backfill_page INTEGER,
+    backfill_cutoff INTEGER,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (platform, chat_id)
 );
@@ -183,6 +245,76 @@ CREATE TABLE IF NOT EXISTS contact_tag_links (
 
 CREATE INDEX IF NOT EXISTS idx_tag_links_contact ON contact_tag_links(platform, chat_id);
 CREATE INDEX IF NOT EXISTS idx_tag_links_status ON contact_tag_links(status);
+
+-- Local contact notes and review decisions. AI drafts never write effective notes/tags.
+CREATE TABLE IF NOT EXISTS contact_dossiers (
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    short_note TEXT NOT NULL DEFAULT '',
+    detail_note TEXT NOT NULL DEFAULT '',
+    short_locked INTEGER NOT NULL DEFAULT 0,
+    detail_locked INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 0,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    contact_sender_key TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(platform, chat_id)
+);
+CREATE TABLE IF NOT EXISTS contact_dossier_drafts (
+    id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    base_version INTEGER NOT NULL,
+    contact_sender_key TEXT NOT NULL,
+    coverage_json TEXT NOT NULL,
+    items_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    reviewed_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_dossier_drafts_contact ON contact_dossier_drafts(platform, chat_id, created_at);
+CREATE TABLE IF NOT EXISTS contact_dossier_rejections (
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    source_ids TEXT NOT NULL,
+    PRIMARY KEY(platform, chat_id, fingerprint)
+);
+
+-- Durable full-history snapshots and per-call checkpoints; never auto-resume AI.
+CREATE TABLE IF NOT EXISTS contact_dossier_runs (
+    id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    contact_sender_key TEXT NOT NULL,
+    base_version INTEGER NOT NULL,
+    current_json TEXT NOT NULL,
+    library_json TEXT NOT NULL,
+    model_json TEXT NOT NULL,
+    coverage_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    stage TEXT NOT NULL DEFAULT 'extract',
+    processed INTEGER NOT NULL DEFAULT 0,
+    completed_batches INTEGER NOT NULL DEFAULT 0,
+    total_batches INTEGER NOT NULL,
+    task_id TEXT,
+    error TEXT,
+    draft_id TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_dossier_runs_contact ON contact_dossier_runs(platform,chat_id,created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dossier_runs_active ON contact_dossier_runs(platform,chat_id)
+    WHERE status IN ('pending','running');
+CREATE TABLE IF NOT EXISTS contact_dossier_units (
+    run_id TEXT NOT NULL,
+    unit_key TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    result_json TEXT,
+    completed_messages INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(run_id,unit_key)
+);
 
 -- Analyze checkpoint, mirroring sync_state: advances whenever messages are
 -- PROCESSED (even if zero items came out), decoupled from what the user saves.
@@ -423,10 +555,32 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
     # the 主号/多号 switch; stats tables carry it as a dimension.
     if "account" not in message_columns:
         await db.execute("ALTER TABLE messages ADD COLUMN account TEXT")
+    # messages.kind: cross-platform message kind, classified once at ingest
+    # (services/stats.classify_kind) so every consumer reads one vocabulary
+    # instead of re-interpreting per-platform msg_type strings. NULL rows are
+    # legacy and get backfilled by the 'kind_backfill' consumer in the background.
+    if "kind" not in message_columns:
+        await db.execute("ALTER TABLE messages ADD COLUMN kind TEXT")
+    # messages.tz_offset: minutes east of UTC of the machine at ingest time.
+    # timestamp is local-naive; without this, syncing while travelling skews
+    # the hour-of-day statistics silently.
+    if "tz_offset" not in message_columns:
+        await db.execute("ALTER TABLE messages ADD COLUMN tz_offset INTEGER")
+
+    # knowledge_items: stable provenance. source_chat is a display name and
+    # rots on rename; (source_platform, source_chat_id) is the real key.
+    knowledge_cols = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(knowledge_items)")}
+    if "source_chat_id" not in knowledge_cols:
+        await db.execute("ALTER TABLE knowledge_items ADD COLUMN source_platform TEXT")
+        await db.execute("ALTER TABLE knowledge_items ADD COLUMN source_chat_id TEXT")
+    await _backfill_knowledge_sources(db)
+    await _migrate_aliases_to_persons(db)
 
     sync_columns = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(sync_state)")}
     if "backfill_page" not in sync_columns:
         await db.execute("ALTER TABLE sync_state ADD COLUMN backfill_page INTEGER")
+    if "backfill_cutoff" not in sync_columns:
+        await db.execute("ALTER TABLE sync_state ADD COLUMN backfill_cutoff INTEGER")
 
     state_columns = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(analysis_state)")}
     if state_columns and "last_analyzed_id" not in state_columns:
@@ -493,6 +647,74 @@ async def _migrate_db(db: aiosqlite.Connection) -> None:
            (SELECT task_id FROM analysis_batches WHERE created_at < datetime('now', '-30 days'))"""
     )
     await db.execute("DELETE FROM analysis_batches WHERE created_at < datetime('now', '-30 days')")
+
+
+async def _backfill_knowledge_sources(db: aiosqlite.Connection) -> None:
+    """Resolve (source_platform, source_chat_id) for legacy knowledge rows from
+    their first source message id; fall back to matching the stored chat name."""
+    import json
+
+    rows = await db.execute_fetchall(
+        """SELECT id, source_chat, source_message_ids FROM knowledge_items
+           WHERE source_chat_id IS NULL AND (source_message_ids IS NOT NULL OR source_chat IS NOT NULL)"""
+    )
+    for kid, name, raw_ids in rows:
+        found = None
+        try:
+            ids = [int(x) for x in json.loads(raw_ids or "[]") if str(x).isdigit()]
+        except (ValueError, TypeError):
+            ids = []
+        if ids:
+            hit = await db.execute_fetchall(
+                "SELECT platform, chat_id FROM messages WHERE id = ? LIMIT 1", (ids[0],)
+            )
+            if hit:
+                found = (hit[0][0], hit[0][1])
+        if found is None and name:
+            hit = await db.execute_fetchall(
+                """SELECT platform, chat_id FROM messages WHERE chat_name = ?
+                   ORDER BY timestamp DESC LIMIT 1""",
+                (name,),
+            )
+            if hit:
+                found = (hit[0][0], hit[0][1])
+        if found:
+            await db.execute(
+                "UPDATE knowledge_items SET source_platform = ?, source_chat_id = ? WHERE id = ?",
+                (found[0], found[1], kid),
+            )
+
+
+async def _migrate_aliases_to_persons(db: aiosqlite.Connection) -> None:
+    """One-time move of contact_aliases (canonical_name → platform ids) into
+    persons / person_identities. The old table is dropped afterwards so there
+    is a single source of truth for identity."""
+    exists = await db.execute_fetchall(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'contact_aliases'"
+    )
+    if not exists:
+        return
+    rows = await db.execute_fetchall(
+        "SELECT canonical_name, platform, platform_id, platform_name FROM contact_aliases ORDER BY id"
+    )
+    person_ids: dict[str, int] = {}
+    for canonical, platform, platform_id, platform_name in rows:
+        pid = person_ids.get(canonical)
+        if pid is None:
+            hit = await db.execute_fetchall("SELECT id FROM persons WHERE name = ?", (canonical,))
+            if hit:
+                pid = int(hit[0][0])
+            else:
+                cur = await db.execute("INSERT INTO persons (name) VALUES (?)", (canonical,))
+                pid = int(cur.lastrowid)
+            person_ids[canonical] = pid
+        await db.execute(
+            """INSERT OR IGNORE INTO person_identities
+               (person_id, platform, kind, value, chat_id, display_name, source)
+               VALUES (?, ?, 'chat', ?, '', ?, 'migrated')""",
+            (pid, platform, platform_id, platform_name),
+        )
+    await db.execute("DROP TABLE contact_aliases")
 
 
 async def _normalize_existing_timestamps(db: aiosqlite.Connection, table: str, column: str) -> None:

@@ -131,10 +131,10 @@ export default function Todos() {
                       <span className={`flex items-center gap-1 text-xs font-medium ${tone.text}`}>
                         <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />{tone.label}
                       </span>
-                      <span className="rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white" style={{ background: PLATFORM_COLOR[item.platform] || "#64748b" }}>
+                      <span className="rounded-md px-1.5 py-0.5 text-xs font-medium text-white" style={{ background: PLATFORM_COLOR[item.platform] || "#64748b" }}>
                         {PLATFORM_LABEL[item.platform] || item.platform}
                       </span>
-                      <span className="text-xs text-[var(--color-muted-foreground)]">{item.chat_name}</span>
+                      <span className="break-words text-sm font-medium text-foreground">{item.chat_name}</span>
                       <span className="ml-auto text-xs text-[var(--color-muted-foreground)] tabular-nums">{formatTime(item.timestamp)}</span>
                     </div>
                     <p className={`mt-1.5 text-sm ${item.done ? "line-through" : "font-medium"}`}>{item.summary || item.content}</p>

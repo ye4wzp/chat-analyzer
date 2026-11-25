@@ -185,7 +185,7 @@ export default function Yearly() {
             </ChartCard>
           </div>
 
-          <p className="flex items-center gap-2 text-[11px] text-[var(--color-muted-foreground)]">
+          <p className="flex items-center gap-2 text-xs text-[var(--color-muted-foreground)]">
             <Gift className="h-3.5 w-3.5" /> 红包 / 转账只能统计次数：微信不会在消息里暴露金额。
             <Link2 className="ml-3 h-3.5 w-3.5" /> 链接与文件在「资源汇总」可逐条查看。
           </p>

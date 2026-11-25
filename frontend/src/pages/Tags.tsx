@@ -181,7 +181,7 @@ function ContactTagsDialog({ platform, chatId, name, activeTags, onClose, onChan
         <div className="flex justify-between border-t border-[var(--color-border)] pt-4">
           <Button variant="outline" size="sm" onClick={() => void aiSuggest()} disabled={suggesting}>
             {suggesting ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Wand2 className="mr-1.5 h-3.5 w-3.5" />}
-            AI 打标签
+            近期标签（100条）
           </Button>
           <Button variant="ghost" size="sm" onClick={onClose}>完成</Button>
         </div>
@@ -216,7 +216,7 @@ function ReviewView({ suggestions, onAct }: {
   }, [suggestions])
 
   if (suggestions.length === 0) {
-    return <p className="py-20 text-center text-sm text-[var(--color-muted-foreground)]">没有待审核的标签建议。点右上角「批量打标签」让 AI 跑一轮。</p>
+    return <p className="py-20 text-center text-sm text-[var(--color-muted-foreground)]">没有待审核的标签建议。此页为近期标签；需要全量标签和备注，请进入联系人档案。</p>
   }
 
   const selectedIds = [...selected]
@@ -256,7 +256,7 @@ function ReviewView({ suggestions, onAct }: {
                       {checked && <Check className="h-3 w-3 text-white" />}
                     </span>
                     <TagChip name={s.tag_name} color={null} seed={s.tag_id} />
-                    {s.tag_status === "pending" && <Badge variant="outline" className="text-[10px]">新</Badge>}
+                    {s.tag_status === "pending" && <Badge variant="outline" className="text-xs">新</Badge>}
                     <span className="text-xs text-[var(--color-muted-foreground)] tabular-nums">{Math.round(s.confidence * 100)}%</span>
                     <span className="min-w-0 flex-1 truncate text-xs text-[var(--color-muted-foreground)]">{s.reason}</span>
                   </div>
@@ -505,9 +505,10 @@ export default function Tags() {
           </div>
           <Button onClick={() => { void runBatch() }} disabled={batchRunning}>
             {batchRunning ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1.5 h-4 w-4" />}
-            {batchRunning ? "打标签中..." : "批量打标签"}
+            {batchRunning ? "打标签中..." : "旧版批量标签（近期100条）"}
           </Button>
         </div>
+        <p className="mt-3 text-xs text-muted-foreground">此页旧版 AI 只读取近期100条。全量聊天分析、备注和原文依据请使用联系人档案里的「全量标签与备注」。</p>
         <div className="mt-4 flex gap-6 text-sm">
           {TABS.map(t => (
             <button
@@ -534,13 +535,13 @@ export default function Tags() {
               <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜索联系人" className="h-9 max-w-xs bg-[var(--color-background)]" />
               <button
                 onClick={() => setFilterTagId(null)}
-                className={`rounded-full px-2.5 py-1 text-xs ${filterTagId == null ? "bg-[var(--color-primary)] text-white" : "bg-[var(--color-secondary)] text-[var(--color-muted-foreground)]"}`}
+                className={`rounded-full px-2.5 py-1 text-xs ${filterTagId == null ? "bg-[var(--color-primary)] text-[var(--color-primary-foreground)]" : "bg-[var(--color-secondary)] text-[var(--color-muted-foreground)]"}`}
               >全部</button>
               {activeTags.map(t => (
                 <button
                   key={t.id}
                   onClick={() => setFilterTagId(filterTagId === t.id ? null : t.id)}
-                  className={`rounded-full px-2.5 py-1 text-xs ${filterTagId === t.id ? "bg-[var(--color-primary)] text-white" : "bg-[var(--color-secondary)] text-[var(--color-muted-foreground)]"}`}
+                  className={`rounded-full px-2.5 py-1 text-xs ${filterTagId === t.id ? "bg-[var(--color-primary)] text-[var(--color-primary-foreground)]" : "bg-[var(--color-secondary)] text-[var(--color-muted-foreground)]"}`}
                 >{t.name} · {t.confirmed_count}</button>
               ))}
             </div>
@@ -554,7 +555,7 @@ export default function Tags() {
                     <PlatformAvatar platform={c.platform} name={c.chat_name || c.chat_id} />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <p className="truncate text-sm font-semibold">{c.chat_name || c.chat_id}</p>
+                        <p className="conversation-name">{c.chat_name || c.chat_id}</p>
                         {c.chat_type === "group" && <Users className="h-3.5 w-3.5 shrink-0 text-[var(--color-muted-foreground)]" />}
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">

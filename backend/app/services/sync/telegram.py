@@ -3,6 +3,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from app.services.sync._common import upsert_message
+
 from app.core.database import DB_PATH
 from app.core.time_utils import normalize_timestamp
 
@@ -83,26 +85,20 @@ async def _import_full_export(chat_list: list[dict]) -> dict:
                 if msg_type == "text" and not content.strip():
                     continue
 
-                cursor = await db.execute(
-                    """INSERT OR IGNORE INTO messages
-                       (platform, chat_id, chat_name, chat_type, sender_id, sender_name,
-                        content, msg_type, timestamp, source_id, raw_data)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        "telegram",
-                        chat_id,
-                        chat_name,
-                        chat_type,
-                        sender_id,
-                        sender_name,
-                        content,
-                        msg_type,
-                        ts,
-                        _source_id(msg, ts, sender_id, content),
-                        json.dumps(msg, ensure_ascii=False),
-                    ),
+                total_imported += await upsert_message(
+                    db,
+                    platform="telegram",
+                    chat_id=chat_id,
+                    chat_name=chat_name,
+                    chat_type=chat_type,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    content=content,
+                    msg_type=msg_type,
+                    timestamp=ts,
+                    src_id=_source_id(msg, ts, sender_id, content),
+                    raw=msg,
                 )
-                total_imported += max(cursor.rowcount, 0)
                 if last_ts is None or ts > last_ts:
                     last_ts = ts
 

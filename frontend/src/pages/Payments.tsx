@@ -79,8 +79,8 @@ export default function Payments() {
         <summary className="flex cursor-pointer list-none items-center gap-2 select-none">
           <Info className="h-3.5 w-3.5 shrink-0" />
           为什么没有金额？{data?.me.length ? <span className="ml-1">（我 = {data.me.map(n => `「${n}」`).join("")}）</span> : <span className="ml-1 text-[var(--color-warning)]">尚未识别出「我」，方向暂不可用</span>}
-          <span className="ml-auto text-[10px] group-open:hidden">展开</span>
-          <span className="ml-auto hidden text-[10px] group-open:inline">收起</span>
+          <span className="ml-auto text-xs group-open:hidden">展开</span>
+          <span className="ml-auto hidden text-xs group-open:inline">收起</span>
         </summary>
         <p className="mt-2 leading-relaxed">
           微信导出的消息里没有金额字段——红包 / 转账都只是一条「微信红包」「微信转账」占位消息，所以这里只能统计次数和方向。
@@ -105,22 +105,22 @@ export default function Payments() {
             <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5 shadow-sm">
               <p className="text-xs text-[var(--color-muted-foreground)]">红包</p>
               <p className="mt-1 text-3xl font-semibold tabular-nums" style={{ color: KIND_META.redpacket.color }}>{data.totals.redpacket}</p>
-              {data.direction && <p className="mt-1 text-[11px] text-[var(--color-muted-foreground)]">我发 {data.direction.redpacket.sent} · 别人发 {data.direction.redpacket.received}</p>}
+              {data.direction && <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">我发 {data.direction.redpacket.sent} · 别人发 {data.direction.redpacket.received}</p>}
             </div>
             <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5 shadow-sm">
               <p className="text-xs text-[var(--color-muted-foreground)]">转账</p>
               <p className="mt-1 text-3xl font-semibold tabular-nums" style={{ color: KIND_META.transfer.color }}>{data.totals.transfer}</p>
-              {data.direction && <p className="mt-1 text-[11px] text-[var(--color-muted-foreground)]">我发 {data.direction.transfer.sent} · 别人发 {data.direction.transfer.received}</p>}
+              {data.direction && <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">我发 {data.direction.transfer.sent} · 别人发 {data.direction.transfer.received}</p>}
             </div>
             <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5 shadow-sm">
               <p className="flex items-center gap-1 text-xs text-[var(--color-muted-foreground)]"><ArrowUpRight className="h-3.5 w-3.5" />我发出</p>
               <p className="mt-1 text-3xl font-semibold tabular-nums text-[var(--color-warning)]">{data.direction ? data.totals.sent : "—"}</p>
-              <p className="mt-1 text-[11px] text-[var(--color-muted-foreground)]">红包 + 转账</p>
+              <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">红包 + 转账</p>
             </div>
             <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-5 shadow-sm">
               <p className="flex items-center gap-1 text-xs text-[var(--color-muted-foreground)]"><ArrowDownLeft className="h-3.5 w-3.5" />收到 / 他人</p>
               <p className="mt-1 text-3xl font-semibold tabular-nums text-[var(--color-success)]">{data.direction ? total - data.totals.sent : "—"}</p>
-              <p className="mt-1 text-[11px] text-[var(--color-muted-foreground)]">私聊里是对方发的；群里是别人发的</p>
+              <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">私聊里是对方发的；群里是别人发的</p>
             </div>
           </div>
 
@@ -174,12 +174,12 @@ export default function Payments() {
             <ul className="divide-y divide-[var(--color-border)]/60">
               {items.map(r => (
                 <li key={r.id} className="flex items-center gap-3 py-2.5 text-sm">
-                  <span className="rounded-md px-1.5 py-0.5 text-[10px] font-medium text-white" style={{ background: KIND_META[r.kind]?.color || "#94a3b8" }}>{KIND_META[r.kind]?.label || r.kind}</span>
+                  <span className="rounded-md px-1.5 py-0.5 text-xs font-medium text-white" style={{ background: KIND_META[r.kind]?.color || "#94a3b8" }}>{KIND_META[r.kind]?.label || r.kind}</span>
                   <span className={`inline-flex items-center gap-0.5 text-xs ${r.is_me ? "text-[var(--color-warning)]" : "text-[var(--color-success)]"}`}>
                     {r.is_me ? <><ArrowUpRight className="h-3 w-3" />我发</> : <><ArrowDownLeft className="h-3 w-3" />{r.sender_name || "对方"}</>}
                   </span>
-                  <button onClick={() => navigate(`/chats?platform=${r.platform}&chat_id=${encodeURIComponent(r.chat_id)}`)} className="min-w-0 flex-1 truncate text-left text-[var(--color-muted-foreground)] hover:text-[var(--color-primary)]">
-                    {r.chat_name || r.chat_id} <span className="text-[10px]">· {PLATFORM_LABEL[r.platform] || r.platform}</span>
+                  <button onClick={() => navigate(`/chats?platform=${r.platform}&chat_id=${encodeURIComponent(r.chat_id)}`)} className="min-w-0 flex-1 break-words text-left font-semibold text-foreground hover:text-[var(--color-primary)]">
+                    {r.chat_name || r.chat_id} <span className="text-xs">· {PLATFORM_LABEL[r.platform] || r.platform}</span>
                   </button>
                   <span className="shrink-0 text-xs tabular-nums text-[var(--color-muted-foreground)]">{formatTime(r.timestamp)}</span>
                 </li>

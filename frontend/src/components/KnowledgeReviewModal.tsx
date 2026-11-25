@@ -5,6 +5,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { X } from "lucide-react"
+import { SourceMessages } from "@/components/SourceMessages"
 
 interface Props {
   taskId: string
@@ -104,6 +105,7 @@ export function KnowledgeReviewModal({ taskId, results, summary, onClose, onSave
                       {item.tags?.map(t => <Badge key={t} variant="outline" className="text-xs">{t}</Badge>)}
                     </div>
                     <p className="text-sm text-muted-foreground">{item.content}</p>
+                    <SourceMessages key={item.id} sourceIds={item.source_message_ids} />
                     {item.source_chat && (
                       <p className="text-xs text-muted-foreground mt-1 opacity-60">来源：{item.source_chat}</p>
                     )}

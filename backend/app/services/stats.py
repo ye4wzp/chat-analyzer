@@ -19,12 +19,14 @@ from datetime import datetime
 
 import aiosqlite
 
-from app.core import database
+from app.core import consumers, database
 
 logger = logging.getLogger("app.stats")
 
 # Bump when classify_kind / extraction rules change so old rollups get rebuilt.
-STATS_VERSION = "6"
+STATS_VERSION = "7"
+CONSUMER = "stats"          # cursor name in the consumers table
+KIND_CONSUMER = "kind_backfill"
 BATCH_SIZE = 20_000
 CONTENT_PEEK = 600  # chars of content fetched per row for classification / URL extraction
 
@@ -208,7 +210,7 @@ class _Agg:
         platform = row["platform"]
         chat_id = row["chat_id"]
         content = row["content"]
-        kind = classify_kind(platform, row["msg_type"], content)
+        kind = row["kind"] or classify_kind(platform, row["msg_type"], content)
 
         self.daily[(account, platform, chat_id, day, kind)] += 1
         self.hourly[(account, platform, chat_id, hour)] += 1
@@ -352,15 +354,28 @@ async def _set_state(db: aiosqlite.Connection, **kv: object) -> None:
 async def _clear(db: aiosqlite.Connection) -> None:
     for table in ("stats_daily", "stats_hourly", "stats_chats", "stats_sender", "stats_sender_hourly", "resources"):
         await db.execute(f"DELETE FROM {table}")
-    await _set_state(db, last_message_id=0, version=STATS_VERSION)
+    await consumers.set_cursor(db, CONSUMER, 0)
+    await _set_state(db, version=STATS_VERSION)
+
+
+async def _cursor(db: aiosqlite.Connection, state: dict[str, str]) -> int:
+    """Stats cursor from the consumers table; falls back to (and migrates) the
+    legacy stats_state.last_message_id key."""
+    cur = await consumers.get_cursor(db, CONSUMER)
+    legacy = int(state.get("last_message_id", 0) or 0)
+    if cur == 0 and legacy:
+        await consumers.set_cursor(db, CONSUMER, legacy)
+        await db.execute("DELETE FROM stats_state WHERE key = 'last_message_id'")
+        return legacy
+    return cur
 
 
 async def get_status() -> dict:
     async with database.connect_db() as db:
         state = await _get_state(db)
-        max_row = await db.execute_fetchall("SELECT COALESCE(MAX(id), 0) FROM messages")
-    max_id = int(max_row[0][0]) if max_row else 0
-    last = int(state.get("last_message_id", 0) or 0)
+        last = await _cursor(db, state)
+        max_id = await consumers.max_message_id(db)
+        kind_cursor = await consumers.get_cursor(db, KIND_CONSUMER)
     version_ok = state.get("version") == STATS_VERSION
     # Cursor ahead of the newest message = rows were deleted or an older
     # backup was restored; the incremental walk can't undo counts, so the
@@ -374,14 +389,15 @@ async def get_status() -> dict:
         "max_message_id": max_id,
         "behind": max(0, max_id - last) if version_ok else max_id,
         "built_at": state.get("built_at"),
+        "kind_backfill_behind": max(0, max_id - kind_cursor),
     }
 
 
-def rebuild_reason(state: dict[str, str], max_id: int) -> str | None:
+def rebuild_reason(state: dict[str, str], cursor: int, max_id: int) -> str | None:
     """Why a full rebuild is needed, or None if incremental is fine."""
     if state.get("version") != STATS_VERSION:
         return "统计规则升级" if state.get("version") else "首次构建"
-    if int(state.get("last_message_id", 0) or 0) > max_id:
+    if cursor > max_id:
         return "检测到消息被删除或从备份恢复"
     return None
 
@@ -403,56 +419,68 @@ async def refresh(progress=None, *, full: bool = False) -> dict:
         return await _refresh_locked(progress, full=full)
 
 
+_ROW_COLUMNS = (
+    "id, account, platform, chat_id, chat_name, chat_type, sender_id, sender_name, "
+    f"substr(content, 1, {CONTENT_PEEK}) AS content, msg_type, kind, timestamp"
+)
+
+
 async def _refresh_locked(progress, *, full: bool) -> dict:
     def emit(pct: int, msg: str) -> None:
         if progress:
             progress(pct, msg)
 
-    processed = 0
     async with database.connect_db() as db:
         state = await _get_state(db)
-        max_row = await db.execute_fetchall("SELECT COALESCE(MAX(id), 0) FROM messages")
-        max_id = int(max_row[0][0]) if max_row else 0
-        reason = "手动重建" if full else rebuild_reason(state, max_id)
+        cursor = await _cursor(db, state)
+        max_id = await consumers.max_message_id(db)
+        reason = "手动重建" if full else rebuild_reason(state, cursor, max_id)
+        start = None
         if reason:
             logger.info("stats full rebuild: %s", reason)
             emit(1, f"{reason}，正在全量重建统计...")
             await _clear(db)
             await db.commit()
-            cursor = 0
-        else:
-            cursor = int(state.get("last_message_id", 0) or 0)
-        span = max(1, max_id - cursor)
+            start = 0
 
-        while cursor < max_id:
-            rows = await db.execute_fetchall(
-                f"""SELECT id, account, platform, chat_id, chat_name, chat_type, sender_id, sender_name,
-                           substr(content, 1, {CONTENT_PEEK}) AS content, msg_type, timestamp
-                    FROM messages WHERE id > ? ORDER BY id LIMIT ?""",
-                (cursor, BATCH_SIZE),
-            )
-            if not rows:
-                break
+        async def handle(conn: aiosqlite.Connection, rows: list[aiosqlite.Row]) -> None:
             agg = _Agg()
             for r in rows:
                 agg.add(r)
-            await agg.flush(db)
-            cursor = int(rows[-1]["id"])
-            await _set_state(db, last_message_id=cursor)
-            await db.commit()
-            processed += len(rows)
-            pct = 2 + int(96 * min(1.0, (cursor - (max_id - span)) / span))
-            emit(pct, f"已统计 {processed:,} 条消息...")
+            await agg.flush(conn)
 
-        await _set_state(
-            db,
-            last_message_id=cursor,
-            version=STATS_VERSION,
-            built_at=datetime.now().isoformat(timespec="seconds"),
+        processed, cursor = await consumers.run_consumer(
+            db, CONSUMER, _ROW_COLUMNS, handle, batch_size=BATCH_SIZE, progress=emit, label="统计", start=start,
         )
+        await _set_state(db, version=STATS_VERSION, built_at=datetime.now().isoformat(timespec="seconds"))
         await db.commit()
 
     emit(100, f"统计完成，本次处理 {processed:,} 条")
+    return {"processed": processed, "last_message_id": cursor}
+
+
+async def backfill_kinds(progress=None) -> dict:
+    """Fill messages.kind for rows ingested before the column existed. Runs as
+    its own consumer so it can be resumed; new rows get kind at insert time."""
+    def emit(pct: int, msg: str) -> None:
+        if progress:
+            progress(pct, msg)
+
+    async def handle(conn: aiosqlite.Connection, rows: list[aiosqlite.Row]) -> None:
+        updates = [
+            (classify_kind(r["platform"], r["msg_type"], r["content"]), r["id"])
+            for r in rows if r["kind"] is None
+        ]
+        if updates:
+            await conn.executemany("UPDATE messages SET kind = ? WHERE id = ?", updates)
+
+    async with database.connect_db() as db:
+        processed, cursor = await consumers.run_consumer(
+            db, KIND_CONSUMER,
+            f"id, platform, msg_type, kind, substr(content, 1, {CONTENT_PEEK}) AS content",
+            handle, batch_size=BATCH_SIZE, progress=emit, label="归一",
+        )
+    emit(100, f"消息类型归一完成，处理 {processed:,} 条")
     return {"processed": processed, "last_message_id": cursor}
 
 
@@ -476,7 +504,8 @@ async def refresh_on_startup() -> None:
     except Exception as e:
         logger.warning("stats status check failed: %s", e)
         return
-    if not status["version_ok"] or status["stale"] or status["behind"] > 0 or not status["ready"]:
-        why = "规则升级" if not status["version_ok"] else "数据回退" if status["stale"] else f"落后 {status['behind']} 条"
+    if not status["version_ok"] or status["stale"] or status["behind"] > 0 or not status["ready"] or status["kind_backfill_behind"] > 0:
+        why = ("规则升级" if not status["version_ok"] else "数据回退" if status["stale"]
+               else f"落后 {status['behind']} 条" if status["behind"] else f"类型归一待补 {status['kind_backfill_behind']} 条")
         logger.info("stats refresh on startup (%s)", why)
         spawn_refresh_if_needed()

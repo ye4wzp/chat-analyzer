@@ -9,6 +9,19 @@ from app.core.config import load_config
 from app.core.time_utils import normalize_timestamp
 
 
+def in_sync_scope(platform: str, chat_id: str, chat_type: str | None, cfg=None) -> bool:
+    """Ingest gate: excluded chats and (by default) broadcast channels never
+    enter the database. Cheaper than filtering every view later."""
+    from app.services.sync.result import WECHAT_FOLD_GROUP
+    if platform == "wechat" and chat_id == WECHAT_FOLD_GROUP:
+        return False
+    cfg = cfg or load_config()
+    scope = cfg.sync_scope
+    if scope.exclude_channels and chat_type == "channel":
+        return False
+    return not any(r.platform == platform and r.chat_id == chat_id for r in scope.exclude_chats)
+
+
 def current_account(platform: str) -> str:
     """Label of the user's own account on `platform`, stamped onto new rows so
     the 多号 switch can tell accounts apart. '' = unlabeled/default account."""
@@ -35,6 +48,24 @@ def source_id(raw: object, *parts: object) -> str:
     return hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()
 
 
+def local_tz_offset_minutes() -> int:
+    """Minutes east of UTC for the machine right now (stored per message)."""
+    from datetime import datetime
+    off = datetime.now().astimezone().utcoffset()
+    return int(off.total_seconds() // 60) if off else 0
+
+
+def keep_raw(platform: str, kind: str, cfg=None) -> bool:
+    """raw_data is insurance for re-parsing. For plain text on WeChat/Telegram
+    the raw JSON repeats content/sender/time — 4× the size of the text itself —
+    so it's dropped unless storage.keep_raw_text is on. QQ raw carries element
+    structure we can't reconstruct, so it is always kept."""
+    cfg = cfg or load_config()
+    if cfg.storage.keep_raw_text or platform == "qq":
+        return True
+    return kind != "text"
+
+
 async def upsert_message(
     db: aiosqlite.Connection,
     *,
@@ -50,18 +81,26 @@ async def upsert_message(
     src_id: str,
     raw: object,
     account: str = "",
+    cfg=None,
 ) -> int:
-    """Insert one message; rows already present are ignored. Returns 0 or 1."""
+    """Insert one message; rows already present are ignored. Returns 0 or 1.
+
+    This is the single ingest point: kind is classified here so every consumer
+    (pre-filter, stats, search) reads one vocabulary; tz offset is stamped so
+    hour-of-day stats survive travelling; raw_data follows the storage policy."""
+    from app.services.stats import classify_kind
+
+    kind = classify_kind(platform, msg_type, content)
+    raw_json = json.dumps(raw, ensure_ascii=False, default=str) if keep_raw(platform, kind, cfg) else None
     cursor = await db.execute(
         """INSERT OR IGNORE INTO messages
            (platform, chat_id, chat_name, chat_type, sender_id, sender_name,
-            content, msg_type, timestamp, source_id, raw_data, account)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            content, msg_type, kind, timestamp, tz_offset, source_id, raw_data, account)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             platform, chat_id, chat_name, chat_type,
-            sender_id, sender_name, content, msg_type, timestamp,
-            src_id, json.dumps(raw, ensure_ascii=False, default=str),
-            account or None,
+            sender_id, sender_name, content, msg_type, kind, timestamp, local_tz_offset_minutes(),
+            src_id, raw_json, account or None,
         ),
     )
     return max(cursor.rowcount, 0)

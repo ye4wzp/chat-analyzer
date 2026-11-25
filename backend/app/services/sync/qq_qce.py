@@ -6,6 +6,7 @@ authed REST API. We hit it with httpx and shape results into our `messages` tabl
 
 import asyncio
 import logging
+import time
 from typing import Any, Awaitable, Callable
 
 import aiosqlite
@@ -15,6 +16,7 @@ from app.core.config import QQConfig, load_config
 from app.core.database import DB_PATH
 from app.services.sync._common import (
     current_account,
+    in_sync_scope,
     parse_ts,
     read_sync_state,
     source_id,
@@ -63,16 +65,23 @@ class QCEError(RuntimeError):
 
 class QCEClient:
     def __init__(self, cfg: QQConfig, timeout: float = 120.0):
+        cfg = cfg.model_copy()
+        # Only use this machine's credential for its managed loopback service.
+        if cfg.host in ("localhost", "127.0.0.1") and cfg.port == 40653:
+            from app.services.sync.qq_launcher import _token_from_disk
+            cfg.token = _token_from_disk() or cfg.token
         if not cfg.token:
             raise QCEError("QCE token 未配置")
         self.cfg = cfg
         self.timeout = timeout
         self.base = f"http://{cfg.host}:{cfg.port}"
         self._client = self._new_client()
+        self.cutoff = int(time.time() * 1000)
 
     def _new_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=self.base,
+            trust_env=self.cfg.host not in ("localhost", "127.0.0.1", "::1"),
             headers={"Authorization": f"Bearer {self.cfg.token}"},
             timeout=self.timeout,
             # QCE silently closes idle keepalive sockets; reuse triggers
@@ -137,8 +146,11 @@ class QCEClient:
             "batchSize": 5000,
             "page": page,
             "limit": limit,
+            "filter": {"endTime": self.cutoff},
         }
-        return await self._post("/api/messages/fetch", body)
+        result = await self._post("/api/messages/fetch", body)
+        result["hasNext"] = bool(result.get("hasNext")) or page * limit < int(result.get("totalCount") or 0)
+        return result
 
 
 def _extract_text(elements: list[dict]) -> str:
@@ -296,6 +308,15 @@ async def sync_one_chat(
     last_seq, _ = await read_sync_state(db, "qq", chat_id)
     last_seq_int = int(last_seq) if last_seq and last_seq.isdigit() else None
     resume = await _read_backfill_page(db, chat_id)
+    saved = await db.execute_fetchall("SELECT backfill_cutoff FROM sync_state WHERE platform='qq' AND chat_id=?", (chat_id,))
+    # Page offsets are only valid against the same bounded snapshot. Never use
+    # an old page number against a newly moving history window.
+    if resume and saved and saved[0][0]:
+        q.cutoff = saved[0][0]
+    else:
+        q.cutoff = int(time.time() * 1000)
+        if resume:
+            resume = 1
     common = dict(
         kind_meta=(chat_id, chat_name, chat_type),
         chat_type_code=chat_type_code,
@@ -328,12 +349,28 @@ async def sync_one_chat(
         tail = await _walk_pages(db, q, start_page=resume, stop_seq=None, **common)
         inserted += tail.inserted
         gap = None if tail.done else max(resume, tail.last_page + 1)
+        if tail.done:
+            # Finish the old snapshot, then catch up the messages that arrived
+            # during backfill before reporting this conversation complete.
+            last_seq, _ = await read_sync_state(db, "qq", chat_id)
+            q.cutoff = int(time.time() * 1000)
+            fresh = await _walk_pages(db, q, start_page=1,
+                                      stop_seq=int(last_seq) if last_seq and last_seq.isdigit() else None,
+                                      **common)
+            inserted += fresh.inserted
+            if fresh.max_seq is not None:
+                await update_sync_state(db, platform="qq", chat_id=chat_id, last_msg_id=str(fresh.max_seq))
+            gap = None if fresh.done else fresh.last_page + 1
 
     await _write_backfill_page(db, chat_id, gap)
+    await db.execute("UPDATE sync_state SET backfill_cutoff=? WHERE platform='qq' AND chat_id=?",
+                     (q.cutoff if gap else None, chat_id))
     return inserted, gap is not None
 
 
-async def sync_all(progress: ProgressCB | None = None) -> dict:
+async def sync_all(progress: ProgressCB | None = None, *, on_result=None, chat_ids=None, skip_ids=()) -> dict:
+    from app.services.sync.result import new_result, record_result, record_missing, error_reason
+    result = new_result("qq")
     cfg = load_config().qq
     if not cfg.enabled:
         raise QCEError("QQ 同步未启用")
@@ -353,33 +390,49 @@ async def sync_all(progress: ProgressCB | None = None) -> dict:
         await _emit(10, "正在拉取群和好友列表...")
         groups, friends = await asyncio.gather(q.groups(), q.friends())
         targets: list[tuple[str, dict]] = [("group", g) for g in groups] + [("friend", f) for f in friends]
+        if chat_ids is not None:
+            targets = [(k, p) for k, p in targets if _chat_meta(kind=k, peer=p)[0] in chat_ids]
+        scope_cfg = load_config()
+        allowed = [(k, p) for k, p in targets
+                   if _chat_meta(kind=k, peer=p)[0] not in skip_ids and in_sync_scope("qq", _chat_meta(kind=k, peer=p)[0], _chat_meta(kind=k, peer=p)[2], scope_cfg)]
+        result["excluded"] = len(targets) - len(allowed)
+        targets = allowed
+        result["targets"] = len(targets)
+        await record_missing(result, chat_ids, [_chat_meta(kind=k, peer=p)[0] for k, p in targets], on_result)
         if not targets:
             await _emit(100, "无聊天可同步")
-            return {"chats": 0, "imported": 0, "skipped": [], "pending": []}
+            return {**result, "skipped": [], "pending": []}
 
         async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
             await db.execute("PRAGMA busy_timeout=30000")
+            scope_cfg = load_config()
             for i, (kind, peer) in enumerate(targets):
                 pct = 15 + int(80 * i / len(targets))
-                _, name, _ = _chat_meta(kind=kind, peer=peer)
+                cid, name, ctype = _chat_meta(kind=kind, peer=peer)
+                if cid and not in_sync_scope("qq", cid, ctype, scope_cfg):
+                    result["excluded"] += 1
+                    result["targets"] -= 1
+                    continue
                 await _emit(pct, f"同步 {kind}: {name}")
                 # 每个会话一个事务：失败的会话回滚掉自己的半截写入，不留给下一个
                 # 会话的 commit 顺带提交（那样计数和检查点会对不上）。
                 try:
                     got, partial = await sync_one_chat(db, q, kind=kind, peer=peer)
-                except httpx.HTTPError as e:
+                except (httpx.HTTPError, QCEError) as e:
                     await db.rollback()
                     skipped.append(f"{name} ({type(e).__name__})")
                     logging.warning("QCE sync skipped %s %s: %s", kind, name, e)
                     # The connection pool may be in a bad state after a disconnect;
                     # rebuild it so the next chat doesn't inherit the failure.
                     await q.reconnect()
+                    await record_result(result, cid, name, "failed", error=error_reason(e), on_result=on_result)
                     continue
                 total += got
                 chats_done += 1
                 if partial:
                     pending.append(name or "?")
                 await db.commit()
+                await record_result(result, cid, name, "pending" if partial else "done", got, on_result=on_result)
 
     summary = f"完成，新增 {total} 条消息（{chats_done} 个聊天）"
     if pending:
@@ -387,4 +440,4 @@ async def sync_all(progress: ProgressCB | None = None) -> dict:
     if skipped:
         summary += f"，跳过 {len(skipped)} 个"
     await _emit(100, summary)
-    return {"chats": chats_done, "imported": total, "skipped": skipped, "pending": pending}
+    return {**result, "skipped": skipped, "pending": pending}

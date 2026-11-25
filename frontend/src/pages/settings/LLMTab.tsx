@@ -143,12 +143,12 @@ export function LLMTab({ provider, url, model, apiKey, embeddingModel, setProvid
           <div className="space-y-3">
             <p className="text-xs text-muted-foreground">
               使用本地已登录的 OpenAI Codex CLI（<code className="text-primary">codex exec</code>）。
-              首次使用需运行 <code className="text-primary">codex login</code> 完成 OpenAI 认证。
-              留空模型则用 Codex 默认值。
+              使用 ChatGPT 登录额度，不回退到 API Key 计费。首次使用需运行 <code className="text-primary">codex login</code>。
+              留空模型则用 Codex 内置默认值。
             </p>
             <div className="max-w-md space-y-1">
               <label className="text-xs text-muted-foreground">模型（可选）</label>
-              <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-5.5 / gpt-5 / o4-mini，留空则用默认" />
+              <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-6.1-sol，留空则用默认" />
             </div>
             <div className="flex items-center gap-3">
               <Button variant="outline" size="sm" onClick={testConnection}>测试 CLI</Button>

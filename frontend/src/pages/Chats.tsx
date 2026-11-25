@@ -1,43 +1,37 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
-import { BarChart3, Bookmark, Bot, Hash, Loader2, Menu, Pin, Search, Send, Sparkles, Star, TrendingUp, Users } from "lucide-react"
-import { fetchAPI, getErrorMessage, type ChatInfo, type Config, type Message } from "@/lib/api"
+import { BarChart3, Bot, CloudOff, Cloud, Loader2, Menu, ListFilter, Search, Sparkles } from "lucide-react"
+import { chatRefKey, fetchAPI, getErrorMessage, updateWechatArchive, type ChatInfo, type Config, type Message } from "@/lib/api"
 import { formatTime } from "@/lib/utils"
 import { CategoryBadge, UrgencyBadge } from "@/components/MessageBadges"
 import { ChatProfileSheet } from "@/components/ChatProfileSheet"
 import { KnowledgeReviewModal } from "@/components/KnowledgeReviewModal"
 import { useDetailPanel } from "@/lib/DetailPanelContext"
+import { useTaskRunner } from "@/hooks/useTaskRunner"
 import { useAnalyzeRunner } from "@/hooks/useAnalyzeRunner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Sheet, SheetHeader } from "@/components/ui/sheet"
-import { PAGE_SIZE, PLATFORM_COLOR, PLATFORM_LABEL } from "@/lib/constants"
+import { PAGE_SIZE, PLATFORM_LABEL } from "@/lib/constants"
+import { ConversationMark, ConversationMeta, ConversationSource } from "@/components/ConversationIdentity"
+import { conversationKind, conversationName, findDuplicateConversationNames } from "@/lib/conversation"
 
-function PlatformAvatar({ platform, name }: { platform: string; name: string }) {
-  const label = platform === "wechat" ? "微" : platform === "qq" ? "Q" : platform === "telegram" ? "T" : (name || "?").slice(0, 1)
-  return (
-    <span
-      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white shadow-sm"
-      style={{ background: PLATFORM_COLOR[platform] || "#64748b" }}
-    >
-      {label}
-    </span>
-  )
-}
+import { WechatArchivePanel } from "@/components/WechatArchivePanel"
+import { WechatArticles } from "@/components/WechatArticles"
 
 function MessageDetail({ m }: { m: Message }) {
   return (
     <div className="space-y-4">
       <div>
-        <p className="text-xs text-[var(--color-muted-foreground)] mb-1">{PLATFORM_LABEL[m.platform] || m.platform} · {m.chat_name}</p>
-        <p className="text-sm font-medium">{m.sender_name || "未知发送者"}</p>
+        <ConversationSource chat={m} />
+        <p className="text-sm font-medium">{m.sender_name || m.sender_id || "未知发送者"}</p>
         <p className="text-xs text-[var(--color-muted-foreground)]">{formatTime(m.timestamp)}</p>
       </div>
-      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-card-elevated)] p-4 text-sm leading-relaxed whitespace-pre-wrap">
+      {m.article_links?.length ? <WechatArticles key={m.id} messageId={m.id} /> : <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-card-elevated)] p-4 text-sm leading-relaxed whitespace-pre-wrap">
         {m.content}
-      </div>
+      </div>}
       {(m.category || m.urgency || m.summary) && (
         <div className="space-y-2 border-t border-[var(--color-border)] pt-4">
           <div className="flex items-center gap-2">
@@ -60,91 +54,99 @@ interface ChatPickerProps {
   setSearch: (v: string) => void
   platform: string
   setPlatform: (v: string) => void
-  filterMode: string
-  filterChats: Set<string>
-  onToggleMode: () => void
-  onToggleChat: (chatName: string) => void
+  kind: string
+  setKind: (v: string) => void
+  excluded: Set<string>
+  duplicateNames: Set<string>
+  batch: {
+    keys: Set<string> | null
+    ready: boolean
+    saving: boolean
+    toggleMode: () => void
+    selectKeys: (keys: string[]) => void
+    toggleChat: (key: string) => void
+    submit: () => void
+    repairQQ?: () => void
+    repairingQQ: boolean
+    canArchive: boolean
+    canStop: boolean
+    archive: () => void
+    showArchive: () => void
+  }
 }
 
-function ChatPicker({ chats, loading, selected, onSelect, search, setSearch, platform, setPlatform, filterMode, filterChats, onToggleMode, onToggleChat }: ChatPickerProps) {
-  const modeLabel = filterMode === "whitelist" ? "白名单" : "黑名单"
-  return (
-    <div className="flex h-full flex-col overflow-hidden bg-[var(--color-card)]">
-      <div className="shrink-0 border-b border-[var(--color-border)] p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-base font-semibold">群组列表</h2>
-          <button
-            onClick={onToggleMode}
-            className="rounded-lg border border-[var(--color-border)] bg-[var(--color-card-elevated)] px-2 py-1 text-xs text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]"
-            title="切换白名单/黑名单"
-          >
-            {modeLabel}
-          </button>
-        </div>
-        <div className="mb-3 grid grid-cols-2 rounded-lg bg-[var(--color-secondary)] p-1 text-center text-xs">
-          <span className="rounded-md bg-[var(--color-card)] px-2 py-1 font-medium text-[var(--color-primary)] shadow-sm">全部 {chats.length}</span>
-          <span className="px-2 py-1 text-[var(--color-muted-foreground)]">重要 {filterChats.size}</span>
-        </div>
-        <div className="relative mb-2">
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-[var(--color-muted-foreground)]" />
-          <Input
-            placeholder="搜索群组"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="h-9 rounded-lg bg-[var(--color-background)] pl-9"
-          />
-        </div>
-        <Select value={platform} onChange={e => setPlatform(e.target.value)} className="h-9 w-full rounded-lg bg-[var(--color-background)] text-sm">
-          <option value="">全部平台</option>
-          <option value="wechat">微信</option>
-          <option value="qq">QQ</option>
-          <option value="telegram">Telegram</option>
+function ChatPicker({ chats, loading, selected, onSelect, search, setSearch, platform, setPlatform, kind, setKind, excluded, duplicateNames, batch }: ChatPickerProps) {
+  const eligible = (c: ChatInfo) => !excluded.has(chatRefKey(c)) || (kind === "公众号" && conversationKind(c) === "公众号")
+  const selectableKeys = batch.keys ? chats.filter(eligible).map(chatRefKey) : []
+  const selectedHere = selectableKeys.filter(key => batch.keys?.has(key)).length
+  return <div className="flex h-full min-h-0 w-full flex-col bg-card">
+    <div className="border-b border-border p-4">
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="text-lg font-semibold">会话列表</h2>
+        <span className="ml-auto mr-2 text-xs tabular-nums text-muted-foreground">{loading ? "读取中" : `${chats.length.toLocaleString()} 个会话`}</span>
+        <Button size="sm" variant="outline" disabled={!batch.ready || batch.saving} aria-pressed={batch.keys !== null} onClick={batch.toggleMode}>
+          {batch.keys ? "取消多选" : "多选"}
+        </Button>
+      </div>
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+        <Input aria-label="搜索会话" placeholder="搜索群名、人名或 ID" value={search} onChange={e => setSearch(e.target.value)} className="h-10 w-full pl-9" />
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <Select aria-label="筛选平台" value={platform} onChange={e => setPlatform(e.target.value)} className="w-full">
+          <option value="">全部平台</option><option value="wechat">微信</option><option value="qq">QQ</option><option value="telegram">Telegram</option>
+        </Select>
+        <Select aria-label="筛选会话类型" value={kind} onChange={e => setKind(e.target.value)} className="w-full">
+          <option value="">全部类型</option>{["群聊","私聊","频道","公众号"].map(k => <option key={k}>{k}</option>)}
         </Select>
       </div>
-      <div className="flex-1 overflow-y-auto">
-        {loading ? (
-          <div className="flex items-center justify-center py-10">
-            <Loader2 className="h-5 w-5 animate-spin text-[var(--color-muted-foreground)]" />
-          </div>
-        ) : chats.length === 0 ? (
-          <p className="py-10 text-center text-sm text-[var(--color-muted-foreground)]">暂无聊天</p>
-        ) : chats.map(c => {
-          const isSelected = selected?.chat_id === c.chat_id && selected?.platform === c.platform
-          const inList = filterChats.has(c.chat_name)
-          return (
-            <div
-              key={`${c.platform}-${c.chat_id}`}
-              className={`group flex items-center border-b border-[var(--color-border)]/70 transition-colors ${isSelected ? "bg-[var(--color-primary-subtle)]" : "hover:bg-[var(--color-card-elevated)]"}`}
-            >
-              <button onClick={() => onSelect(c)} className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left">
-                <PlatformAvatar platform={c.platform} name={c.chat_name || c.chat_id} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <p className="truncate text-sm font-semibold">{c.chat_name || c.chat_id}</p>
-                    {inList && <Pin className="h-3.5 w-3.5 shrink-0 text-[var(--color-destructive)]" />}
-                  </div>
-                  <p className="text-xs text-[var(--color-muted-foreground)]">
-                    {PLATFORM_LABEL[c.platform] || c.platform} · {c.chat_type === "group" ? "群聊" : "私聊"} · {c.msg_count.toLocaleString()} 条
-                  </p>
-                </div>
-                <p className="text-right text-xs text-[var(--color-muted-foreground)]">{formatTime(c.latest)}</p>
-              </button>
-              <button
-                onClick={(e) => { e.stopPropagation(); onToggleChat(c.chat_name) }}
-                title={inList ? "从名单移除" : "加入名单"}
-                className={`mr-2 rounded-md p-1.5 transition-colors ${inList ? "text-[var(--color-warning)]" : "text-[var(--color-muted-foreground)]/40 hover:bg-[var(--color-card)] hover:text-[var(--color-foreground)]"}`}
-              >
-                <Star className={`h-4 w-4 ${inList ? "fill-current" : ""}`} />
-              </button>
-            </div>
-          )
-        })}
-      </div>
-      <div className="shrink-0 border-t border-[var(--color-border)] px-4 py-3 text-center text-xs text-[var(--color-muted-foreground)]">
-        已显示 {chats.length} 个群组
-      </div>
+      <button className="mt-2 text-xs font-medium text-primary hover:underline" onClick={batch.showArchive}>公众号全文任务</button>
+      {batch.keys && <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+        <Button size="sm" variant="outline" disabled={batch.saving || selectedHere === selectableKeys.length}
+          onClick={() => batch.selectKeys(selectableKeys)}>全选当前筛选结果</Button>
+        <span className="text-xs tabular-nums text-muted-foreground">已选 {selectedHere} / 可选 {selectableKeys.length}</span>
+      </div>}
     </div>
-  )
+    <div className="min-h-0 flex-1 overflow-y-auto" aria-label="会话">
+      {loading ? <Loader2 aria-label="加载会话" className="mx-auto my-8 h-5 w-5 animate-spin" /> :
+        chats.length === 0 ? <p className="p-5 text-sm text-muted-foreground">没有匹配的会话</p> :
+        chats.map(c => {
+          const key = chatRefKey(c)
+          const active = selected && key === chatRefKey(selected)
+          const name = conversationName(c)
+          const identity = <>
+            <ConversationMark chat={c} />
+            <span className="min-w-0 flex-1">
+              <strong className="conversation-name">{name}</strong>
+              <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                <ConversationMeta chat={c} /><span>{c.msg_count.toLocaleString()} 条</span>
+                {c.latest && <time className="ml-auto" dateTime={c.latest} title={formatTime(c.latest)}>{c.latest.slice(5, 10)}</time>}
+                {excluded.has(key) && <span className="font-medium text-warning">已停止同步</span>}
+              </span>
+              {(!c.chat_name?.trim() || c.chat_name.trim() === c.chat_id || duplicateNames.has(c.platform + "|" + name)) && <span className="conversation-id">{c.chat_id}</span>}
+            </span>
+          </>
+          if (batch.keys) {
+            const checked = batch.keys.has(key)
+            const disabled = !eligible(c) || batch.saving
+            return <label key={key} data-checked={checked} className={`conversation-row ${disabled ? "cursor-default" : "cursor-pointer"}`}>
+              <input type="checkbox" checked={checked} disabled={disabled} onChange={() => batch.toggleChat(key)}
+                className="mt-2 h-4 w-4 shrink-0 accent-primary" />{identity}
+            </label>
+          }
+          return <button key={key} onClick={() => onSelect(c)} aria-current={active ? "true" : undefined}
+            className="conversation-row" title={c.chat_name || c.chat_id}>{identity}</button>
+        })}
+    </div>
+    {batch.keys && <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border bg-card p-3">
+      <span aria-live="polite" className="text-sm tabular-nums">已选 {batch.keys.size} 个会话</span>
+      {batch.repairQQ && <Button size="sm" variant="outline" disabled={batch.repairingQQ} onClick={batch.repairQQ}>补查所选 QQ 历史</Button>}
+      {batch.canArchive && <Button size="sm" disabled={batch.saving} onClick={batch.archive}>保存历史并自动保存新文章</Button>}
+      <Button size="sm" variant="outline" disabled={!batch.canStop || batch.saving} onClick={batch.submit}>
+        {batch.saving ? "正在保存…" : "批量停止同步"}
+      </Button>
+    </div>}
+  </div>
 }
 
 export default function Chats() {
@@ -159,14 +161,23 @@ export default function Chats() {
   const [chatSearch, setChatSearch] = useState("")
   const [messageSearch, setMessageSearch] = useState("")
   const [platform, setPlatform] = useState(searchParams.get("platform") || "")
+  const [kind, setKind] = useState("")
   const [msgHasMore, setMsgHasMore] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [filterMode, setFilterMode] = useState("whitelist")
   const [filterChats, setFilterChats] = useState<Set<string>>(new Set())
+  const [legacyNames, setLegacyNames] = useState<Set<string>>(new Set())
+  const [syncExcluded, setSyncExcluded] = useState<Set<string>>(new Set())
+  const [configReady, setConfigReady] = useState(false)
+  const [batchKeys, setBatchKeys] = useState<Set<string> | null>(null)
+  const [savingScope, setSavingScope] = useState(false)
+  const [archiveOpen, setArchiveOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const msgOffsetRef = useRef(0)
   const msgReqRef = useRef(0)
   const analyze = useAnalyzeRunner()
+  const [localQQ, setLocalQQ] = useState(false)
+  const syncRunner = useTaskRunner()
 
   const loadMessages = useCallback(async (chat: ChatInfo, append = false) => {
     const reqId = ++msgReqRef.current
@@ -234,33 +245,119 @@ export default function Chats() {
     fetchAPI<Config>("/config").then(cfg => {
       if (cancelled) return
       setFilterMode(cfg.chat_filter.mode)
-      setFilterChats(new Set(cfg.chat_filter.chats))
+      // Scope is keyed on (platform, chat_id); legacy names are matched by name until migrated.
+      const keys = new Set((cfg.chat_filter.refs || []).map(chatRefKey))
+      setFilterChats(keys)
+      setLegacyNames(new Set(cfg.chat_filter.chats || []))
+      setSyncExcluded(new Set((cfg.sync_scope?.exclude_chats || []).map(chatRefKey)))
+      setLocalQQ(cfg.qq.enabled && cfg.qq.source === "local")
+      setConfigReady(true)
     }).catch(() => { /* browsing can work without config */ })
     return () => { cancelled = true }
   }, [])
 
-  const toggleFilterChat = useCallback(async (chatName: string) => {
-    if (!chatName) return
-    const inList = filterChats.has(chatName)
+  const toggleFilterChat = useCallback(async (chat: ChatInfo) => {
+    const key = chatRefKey(chat)
+    const ref = { platform: chat.platform, chat_id: chat.chat_id }
+    const inList = filterChats.has(key) || legacyNames.has(chat.chat_name)
     setFilterChats(prev => {
       const next = new Set(prev)
-      if (inList) next.delete(chatName); else next.add(chatName)
+      if (inList) next.delete(key); else next.add(key)
       return next
     })
     try {
-      await fetchAPI<Config>("/config", {
-        method: "PUT",
-        body: JSON.stringify(inList ? { remove_chat: chatName } : { add_chat: chatName }),
-      })
+      const body = inList
+        ? { remove_chat_ref: ref, ...(legacyNames.has(chat.chat_name) ? { remove_chat: chat.chat_name } : {}) }
+        : { add_chat_ref: ref }
+      const cfg = await fetchAPI<Config>("/config", { method: "PUT", body: JSON.stringify(body) })
+      setLegacyNames(new Set(cfg.chat_filter.chats || []))
     } catch (e) {
       setFilterChats(prev => {
         const next = new Set(prev)
-        if (inList) next.add(chatName); else next.delete(chatName)
+        if (inList) next.add(key); else next.delete(key)
         return next
       })
       toast.error(getErrorMessage(e))
     }
-  }, [filterChats])
+  }, [filterChats, legacyNames])
+
+  const toggleSyncExclude = useCallback(async (chat: ChatInfo) => {
+    const key = chatRefKey(chat)
+    const ref = { platform: chat.platform, chat_id: chat.chat_id }
+    const excluded = syncExcluded.has(key)
+    if (!excluded && !confirm(`以后不再同步「${chat.chat_name || chat.chat_id}」？已入库的消息会保留；要删除历史可到 设置 → 备份 → 存储。`)) return
+    try {
+      setSavingScope(true)
+      const cfg = await fetchAPI<Config>("/config", { method: "PUT", body: JSON.stringify(excluded ? { remove_sync_exclude: ref } : { add_sync_exclude: ref }) })
+      setSyncExcluded(new Set((cfg.sync_scope?.exclude_chats || []).map(chatRefKey)))
+      toast.success(excluded ? "已恢复同步" : "已加入不同步列表")
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    } finally { setSavingScope(false) }
+  }, [syncExcluded])
+
+  const stopSelected = async () => {
+    if (!batchKeys || savingScope) return
+    const targets = chats.filter(c => batchKeys.has(chatRefKey(c)) && !syncExcluded.has(chatRefKey(c)))
+    if (!targets.length) return
+    const names = targets.map(c => `${PLATFORM_LABEL[c.platform] || c.platform} · ${conversationName(c)}${duplicateNames.has(c.platform + "|" + conversationName(c)) || !c.chat_name || c.chat_name === c.chat_id ? " · " + c.chat_id : ""}`)
+    if (!window.confirm(`停止同步以下 ${targets.length} 个会话？从下次同步起生效，已有消息会保留。\n\n${names.join("\n")}`)) return
+    setSavingScope(true)
+    try {
+      const refs = targets.map(({ platform, chat_id }) => ({ platform, chat_id }))
+      const cfg = await fetchAPI<Config>("/config", { method: "PUT", body: JSON.stringify({ add_sync_excludes: refs }) })
+      const saved = new Set((cfg.sync_scope?.exclude_chats || []).map(chatRefKey))
+      setSyncExcluded(saved)
+      const missing = targets.map(chatRefKey).filter(key => !saved.has(key))
+      if (missing.length) {
+        setBatchKeys(new Set(missing))
+        throw new Error(`还有 ${missing.length} 个会话未保存，可重试`)
+      }
+      setBatchKeys(null)
+      toast.success(`已停止同步 ${targets.length} 个会话`)
+    } catch (e) {
+      toast.error(getErrorMessage(e))
+    } finally {
+      setSavingScope(false)
+    }
+  }
+
+  const picked = batchKeys ? chats.filter(c => batchKeys.has(chatRefKey(c))) : []
+  const canArchive = picked.length > 0 && picked.every(c => conversationKind(c) === "公众号")
+  const showArchive = () => { setPickerOpen(false); setArchiveOpen(true) }
+
+  const archiveSelected = async () => {
+    if (!canArchive || savingScope) return
+    setSavingScope(true)
+    try {
+      await updateWechatArchive(picked.map(c => c.chat_id), "enable")
+      setBatchKeys(null)
+      showArchive()
+      toast.success(`已为 ${picked.length} 个公众号开启全文保存`)
+    } catch (e) { toast.error(getErrorMessage(e)) }
+    finally { setSavingScope(false) }
+  }
+
+  const batch: ChatPickerProps["batch"] = {
+    repairingQQ: syncRunner.running.has("sync_qq"),
+    repairQQ: localQQ && picked.length > 0 && picked.every(c => c.platform === "qq" && !syncExcluded.has(chatRefKey(c)))
+      ? () => void syncRunner.run({
+          start: () => fetchAPI("/sync/qq", { method: "POST", body: JSON.stringify({ mode: "repair", chat_ids: picked.map(c => c.chat_id) }) }),
+          taskType: "sync_qq", loadingText: "正在补查所选 QQ 会话…",
+        }) : undefined,
+    canArchive, canStop: picked.some(c => !syncExcluded.has(chatRefKey(c))), archive: () => void archiveSelected(), showArchive,
+    keys: batchKeys, ready: configReady, saving: savingScope,
+    toggleMode: () => setBatchKeys(prev => prev ? null : new Set()),
+    selectKeys: keys => setBatchKeys(prev => prev && new Set([...prev, ...keys])),
+    toggleChat: key => setBatchKeys(prev => {
+      if (!prev) return prev
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    }),
+    submit: () => void stopSelected(),
+  }
 
   const toggleFilterMode = useCallback(async () => {
     const prevMode = filterMode
@@ -291,8 +388,9 @@ export default function Chats() {
 
   const filteredChats = chats.filter(c => {
     if (platform && c.platform !== platform) return false
-    const name = c.chat_name || c.chat_id
-    if (chatSearch && !name.toLowerCase().includes(chatSearch.toLowerCase())) return false
+    if (kind && conversationKind(c) !== kind) return false
+    const term = chatSearch.trim().toLowerCase()
+    if (term && ![c.chat_name, c.chat_id].some(v => v?.toLowerCase().includes(term))) return false
     return true
   })
 
@@ -305,13 +403,14 @@ export default function Chats() {
     )
   }, [messageSearch, messages])
 
-  const importantCount = messages.filter(m => (m.urgency || 0) >= 4).length
-  const summaryCount = messages.filter(m => m.summary).length
-  const activeSenderCount = new Set(messages.map(m => m.sender_id || m.sender_name).filter(Boolean)).size
+  const duplicateNames = findDuplicateConversationNames(chats)
+  const excluded = selectedChat && syncExcluded.has(chatRefKey(selectedChat))
+  const listed = selectedChat && (filterChats.has(chatRefKey(selectedChat)) || legacyNames.has(selectedChat.chat_name))
+  const modeLabel = filterMode === "blacklist" ? "分析黑名单" : "分析白名单"
 
   return (
     <div className="flex h-full overflow-hidden bg-[var(--color-background)]">
-      <div className="hidden w-[300px] shrink-0 border-r border-[var(--color-border)] md:flex">
+      <div className="hidden w-[clamp(290px,27vw,410px)] shrink-0 border-r border-border lg:flex">
         <ChatPicker
           chats={filteredChats}
           loading={loadingChats}
@@ -321,10 +420,7 @@ export default function Chats() {
           setSearch={setChatSearch}
           platform={platform}
           setPlatform={setPlatform}
-          filterMode={filterMode}
-          filterChats={filterChats}
-          onToggleMode={toggleFilterMode}
-          onToggleChat={toggleFilterChat}
+          kind={kind} setKind={setKind} excluded={syncExcluded} duplicateNames={duplicateNames} batch={batch}
         />
       </div>
 
@@ -339,21 +435,20 @@ export default function Chats() {
           setSearch={setChatSearch}
           platform={platform}
           setPlatform={setPlatform}
-          filterMode={filterMode}
-          filterChats={filterChats}
-          onToggleMode={toggleFilterMode}
-          onToggleChat={toggleFilterChat}
+          kind={kind} setKind={setKind} excluded={syncExcluded} duplicateNames={duplicateNames} batch={batch}
         />
       </Sheet>
 
+      {archiveOpen && <WechatArchivePanel chats={chats} onClose={() => setArchiveOpen(false)} />}
+
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-background)]/60">
-        <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-4 py-2 md:hidden">
+        <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-4 py-2 lg:hidden">
           <button
             onClick={() => setPickerOpen(true)}
             className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-3 py-1.5 text-xs text-[var(--color-muted-foreground)]"
           >
             <Menu className="h-3.5 w-3.5" />
-            {selectedChat?.chat_name || "选择聊天"}
+            切换会话
           </button>
         </div>
 
@@ -363,75 +458,68 @@ export default function Chats() {
           </div>
         ) : (
           <>
-            <header className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-card)] px-5 py-4">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="flex min-w-0 items-center gap-3">
-                  <PlatformAvatar platform={selectedChat.platform} name={selectedChat.chat_name || selectedChat.chat_id} />
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h1 className="truncate text-lg font-semibold">{selectedChat.chat_name}</h1>
-                      <Star className="h-4 w-4 fill-[var(--color-warning)] text-[var(--color-warning)]" />
-                    </div>
-                    <p className="text-xs text-[var(--color-muted-foreground)]">
-                      {PLATFORM_LABEL[selectedChat.platform] || selectedChat.platform} · {selectedChat.chat_type === "group" ? "群聊" : "私聊"} · {selectedChat.msg_count.toLocaleString()} 条消息
-                    </p>
+            <header className="max-h-[43%] shrink-0 overflow-y-auto border-b border-border bg-card px-4 py-3 lg:px-6">
+              <div className="flex items-start gap-3">
+                <ConversationMark chat={selectedChat} />
+                <div className="min-w-0 flex-1">
+                  <h1 className="break-words text-xl font-semibold leading-snug">{conversationName(selectedChat)}</h1>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    <ConversationMeta chat={selectedChat} /><span>{selectedChat.msg_count.toLocaleString()} 条消息</span>
+                    {configReady && <span className={excluded ? "text-warning" : ""}>{excluded ? "已停止同步" : "已启用同步"}</span>}
                   </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => void toggleFilterChat(selectedChat.chat_name)}
-                    title="加入/移出分析名单"
-                  >
-                    <Pin className="h-4 w-4" />
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setProfileOpen(true)}>
-                    <BarChart3 className="mr-1.5 h-3.5 w-3.5" />
-                    画像
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => analyze.run({ platform: selectedChat.platform, chat_id: selectedChat.chat_id })}
-                    disabled={analyze.running}
-                  >
-                    {analyze.running ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
-                    分析此聊天
-                  </Button>
+                  <details className="mt-1 text-xs text-muted-foreground"><summary className="w-fit cursor-pointer">会话 ID</summary><span className="conversation-id">{selectedChat.chat_id}</span></details>
                 </div>
               </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="outline" disabled={!configReady || savingScope || batchKeys !== null} onClick={() => void toggleSyncExclude(selectedChat)}>
+                  {excluded ? <Cloud size={15} /> : <CloudOff size={15} />}{excluded ? "恢复同步" : "停止同步"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setProfileOpen(true)}><BarChart3 size={15} />会话画像</Button>
+                <Button size="sm" variant="outline" disabled={analyze.running} onClick={() => analyze.run({ platform: selectedChat.platform, chat_id: selectedChat.chat_id })}><Sparkles size={15} />分析此聊天</Button>
+              </div>
+              <details className="mt-2 text-xs text-muted-foreground">
+                <summary className="w-fit cursor-pointer py-1">批量分析名单</summary>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <span>{modeLabel} · {listed ? "此会话在名单内" : "此会话未入名单"}</span>
+                  <Button size="sm" variant="outline" disabled={!configReady} onClick={() => void toggleFilterChat(selectedChat)}>{listed ? "移出" : "加入"}{modeLabel}</Button>
+                  <Button size="sm" variant="ghost" disabled={!configReady} onClick={() => void toggleFilterMode()}>切换到{filterMode === "blacklist" ? "分析白名单" : "分析黑名单"}</Button>
+                </div>
+              </details>
             </header>
 
+            <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2 text-muted-foreground">
+              <ListFilter size={16} /><Input aria-label="筛选已加载消息" placeholder="在已加载消息中查正文或发言人" value={messageSearch} onChange={e => setMessageSearch(e.target.value)} className="h-9 max-w-md bg-card" />
+            </div>
             <div className="flex-1 overflow-y-auto px-4 py-4 md:px-6">
               {loadingMsgs && messages.length === 0 ? (
                 <div className="flex items-center justify-center py-10">
                   <Loader2 className="h-5 w-5 animate-spin text-[var(--color-muted-foreground)]" />
                 </div>
-              ) : visibleMessages.length === 0 ? (
-                <p className="py-10 text-center text-sm text-[var(--color-muted-foreground)]">暂无消息</p>
+              ) : visibleMessages.length === 0 && !msgHasMore ? (
+                <p className="py-10 text-center text-sm text-muted-foreground">{messageSearch ? "已加载消息中没有匹配项" : "暂无消息"}</p>
               ) : (
                 <div className="mx-auto max-w-3xl space-y-3">
+                  {!visibleMessages.length && <p className="py-4 text-center text-sm text-muted-foreground">已加载消息中没有匹配项</p>}
                   {visibleMessages.map(m => (
                     <button
                       key={m.id}
                       onClick={() => open(<MessageDetail m={m} />)}
-                      className={`w-full rounded-xl border p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md ${(m.urgency || 0) >= 4 ? "border-[var(--color-destructive)]/30 bg-[var(--color-destructive-subtle)]" : (m.urgency || 0) <= 2 && m.urgency ? "border-[var(--color-success)]/30 bg-[var(--color-success-subtle)]" : "border-[var(--color-border)] bg-[var(--color-card)]"}`}
+                      className={`w-full rounded-xl border p-4 text-left transition-colors hover:border-[var(--color-border-strong)] ${(m.urgency || 0) >= 4 ? "border-[var(--color-destructive)]/30 bg-[var(--color-destructive-subtle)]" : (m.urgency || 0) <= 2 && m.urgency ? "border-[var(--color-success)]/30 bg-[var(--color-success-subtle)]" : "border-[var(--color-border)] bg-[var(--color-card)]"}`}
                     >
                       <div className="flex items-start gap-3">
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--color-surface-3)] text-xs font-semibold text-[var(--color-foreground)]">
-                          {(m.sender_name || "?").slice(0, 1)}
+                          {Array.from(m.sender_name || m.sender_id || "?")[0]}
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="mb-1 flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-semibold">{m.sender_name || "未知发送者"}</span>
-                            <span className="rounded-md bg-[var(--color-success-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-success)]">
-                              {PLATFORM_LABEL[m.platform] || m.platform}
-                            </span>
+                            <span className="text-sm font-semibold">{m.sender_name || m.sender_id || "未知发送者"}</span>
+
                             {m.category && <CategoryBadge category={m.category} />}
                             {m.urgency && <UrgencyBadge urgency={m.urgency} />}
                             <span className="ml-auto text-xs text-[var(--color-muted-foreground)] tabular-nums">{formatTime(m.timestamp)}</span>
                           </div>
-                          <p className="line-clamp-2 text-sm leading-relaxed text-[var(--color-foreground)]">{m.content}</p>
+                          <p className="line-clamp-4 whitespace-pre-wrap break-words text-base leading-relaxed text-[var(--color-foreground)]">{m.article_links?.length ? m.article_links.map(a => a.title).join("\n") : m.content}</p>
+                          {!!m.article_links?.length && <span className="mt-2 inline-block text-xs text-primary">{m.article_links.length} 篇文章 · 阅读与保存全文</span>}
                           {m.summary && (
                             <div className="mt-2 inline-flex max-w-full items-center gap-1 rounded-md bg-[var(--color-primary-subtle)] px-2 py-1 text-xs text-[var(--color-primary)]">
                               <Bot className="h-3.5 w-3.5 shrink-0" />
@@ -439,7 +527,7 @@ export default function Chats() {
                             </div>
                           )}
                         </div>
-                        <Bookmark className="h-4 w-4 shrink-0 text-[var(--color-muted-foreground)]/60" />
+
                       </div>
                     </button>
                   ))}
@@ -457,42 +545,6 @@ export default function Chats() {
           </>
         )}
       </main>
-
-      <aside className="hidden w-[320px] shrink-0 flex-col gap-3 overflow-y-auto border-l border-[var(--color-border)] bg-[var(--color-background)] p-4 xl:flex">
-        <section className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">筛选条件</h2>
-            <button onClick={() => setMessageSearch("")} className="text-xs font-medium text-[var(--color-primary)]">重置</button>
-          </div>
-          <div>
-            <p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-[var(--color-muted-foreground)]"><Hash className="h-3.5 w-3.5" />关键词筛选</p>
-            <Input value={messageSearch} onChange={e => setMessageSearch(e.target.value)} placeholder="输入关键词" className="h-10 rounded-lg bg-[var(--color-background)]" />
-          </div>
-        </section>
-
-        <section className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
-          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold"><Bot className="h-4 w-4 text-[var(--color-primary)]" />AI 观察 · 基于已加载消息</h2>
-          <div className="space-y-3">
-            <div className="rounded-xl bg-[var(--color-primary-subtle)] p-3">
-              <p className="text-sm font-medium text-[var(--color-primary)]">高频话题</p>
-              <p className="mt-1 text-xs leading-relaxed text-[var(--color-primary)]/75">当前页里共有 {summaryCount} 条摘要，重点集中在项目进度、技术方案和群内协作。</p>
-            </div>
-            <div className="rounded-xl bg-[var(--color-success-subtle)] p-3">
-              <p className="flex items-center gap-2 text-sm font-medium text-[var(--color-success)]"><Users className="h-4 w-4" />活跃成员</p>
-              <p className="mt-1 text-xs leading-relaxed text-[var(--color-success)]/75">当前加载消息涉及 {activeSenderCount} 位成员，可继续加载更多获得完整画像。</p>
-            </div>
-            <div className="rounded-xl bg-[var(--color-warning-subtle)] p-3">
-              <p className="flex items-center gap-2 text-sm font-medium text-[var(--color-warning)]"><TrendingUp className="h-4 w-4" />情绪趋势</p>
-              <p className="mt-1 text-xs leading-relaxed text-[var(--color-warning)]/75">重要消息 {importantCount} 条，建议优先处理带高紧急度标记的内容。</p>
-            </div>
-          </div>
-        </section>
-
-        <Button variant="outline" onClick={() => selectedChat && setProfileOpen(true)}>
-          查看完整分析报告
-          <Send className="ml-2 h-4 w-4" />
-        </Button>
-      </aside>
 
       {error && (
         <div className="fixed bottom-6 right-6 rounded-lg border border-[var(--color-destructive)]/30 bg-[var(--color-card)] px-4 py-3 text-sm text-[var(--color-destructive)] shadow-lg">

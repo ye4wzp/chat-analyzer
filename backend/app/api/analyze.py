@@ -68,7 +68,6 @@ async def get_analysis_results(task_id: str):
 
 @router.post("/api/analyze/{task_id}/confirm")
 async def confirm_analysis(task_id: str, body: ConfirmRequest):
-    from app.services.embedder import find_semantic_duplicates
     from app.services.knowledge import save_knowledge_items
 
     async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
@@ -79,8 +78,9 @@ async def confirm_analysis(task_id: str, body: ConfirmRequest):
 
     selected_ids = set(body.ids)
     selected = [it for it in items if it["id"] in selected_ids]
-    duplicate_idx = await find_semantic_duplicates(selected, task_id=task_id)
-    to_save = [it for i, it in enumerate(selected) if i not in duplicate_idx]
+    # The user explicitly selected these items. Similarity is not proof that
+    # an update/correction is redundant; save_knowledge_items handles exact duplicates.
+    to_save = selected
 
     async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
         await db.execute("PRAGMA busy_timeout=30000")

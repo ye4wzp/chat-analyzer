@@ -10,6 +10,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { LLMTab } from "./settings/LLMTab"
 import { ImportTab } from "./settings/ImportTab"
 import { BackupsPanel } from "./settings/BackupsPanel"
+import { StoragePanel } from "./settings/StoragePanel"
+import { SyncScopeCard } from "./settings/SyncScopeCard"
 import { Loader2, Clock, Plus, Trash2 } from "lucide-react"
 import { formatTime } from "@/lib/utils"
 import { MASKED } from "@/lib/constants"
@@ -310,7 +312,10 @@ export default function Settings() {
         </TabsContent>
 
         <TabsContent value="sources">
-          <ImportTab config={config} onConfigChange={setConfig} />
+          <div className="space-y-6">
+            <SyncScopeCard config={config} onConfigChange={setConfig} />
+            <ImportTab config={config} onConfigChange={setConfig} />
+          </div>
         </TabsContent>
 
         <TabsContent value="scheduler">
@@ -373,7 +378,10 @@ export default function Settings() {
         </TabsContent>
 
         <TabsContent value="backups">
-          <BackupsPanel />
+          <div className="space-y-6">
+            <BackupsPanel />
+            <StoragePanel onConfigChange={setConfig} />
+          </div>
         </TabsContent>
       </Tabs>
     </div>

@@ -1,22 +1,22 @@
-"""Cross-platform identity: contact_aliases maps (platform, platform_id) to a
-canonical person. VIP whitelisting and pre-filtering resolve through it, so a
-display-name change on one platform no longer breaks VIP status."""
-import aiosqlite
+"""Legacy alias endpoints, now a thin view over persons / person_identities
+(kind='chat'). Kept so the Settings 别名卡 and the CLI keep working; new code
+should use /api/persons."""
 from fastapi import APIRouter, HTTPException
 
 from app.core import database
 from app.models.aliases import AliasCreate
+from app.services import persons as svc
 
 router = APIRouter()
 
 
 @router.get("/api/aliases")
 async def list_aliases():
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
-        db.row_factory = aiosqlite.Row
+    async with database.connect_db() as db:
         rows = await db.execute_fetchall(
-            """SELECT id, canonical_name, platform, platform_id, platform_name
-               FROM contact_aliases ORDER BY canonical_name, platform"""
+            """SELECT i.id, p.name AS canonical_name, i.platform, i.value AS platform_id, i.display_name AS platform_name
+               FROM person_identities i JOIN persons p ON p.id = i.person_id
+               WHERE i.kind = 'chat' ORDER BY p.name, i.platform"""
         )
     grouped: dict[str, list[dict]] = {}
     for r in rows:
@@ -29,24 +29,23 @@ async def list_aliases():
 async def add_alias(body: AliasCreate):
     if not body.canonical_name.strip() or not body.platform_id.strip():
         raise HTTPException(400, "canonical_name 与 platform_id 不能为空")
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
-        await db.execute(
-            """INSERT INTO contact_aliases (canonical_name, platform, platform_id, platform_name)
-               VALUES (?,?,?,?)
-               ON CONFLICT(platform, platform_id) DO UPDATE SET
-                   canonical_name=excluded.canonical_name,
-                   platform_name=excluded.platform_name""",
-            (body.canonical_name.strip(), body.platform, body.platform_id.strip(), body.platform_name),
+    async with database.connect_db() as db:
+        pid = await svc.ensure_person(db, body.canonical_name.strip())
+        await svc.add_identity(
+            db, pid, platform=body.platform, kind="chat", value=body.platform_id.strip(),
+            display_name=body.platform_name,
         )
         await db.commit()
-    return {"ok": True}
+    return {"ok": True, "person_id": pid}
 
 
 @router.delete("/api/aliases/{alias_id}")
 async def delete_alias(alias_id: int):
-    async with aiosqlite.connect(str(database.DB_PATH), timeout=60) as db:
-        cur = await db.execute("DELETE FROM contact_aliases WHERE id=?", (alias_id,))
-        await db.commit()
-        if cur.rowcount == 0:
+    async with database.connect_db() as db:
+        rows = await db.execute_fetchall("SELECT person_id FROM person_identities WHERE id = ?", (alias_id,))
+        if not rows:
             raise HTTPException(404, "别名不存在")
+        await db.execute("DELETE FROM person_identities WHERE id = ?", (alias_id,))
+        await svc.prune_empty(db, int(rows[0][0]))
+        await db.commit()
     return {"ok": True}

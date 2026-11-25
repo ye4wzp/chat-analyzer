@@ -61,11 +61,12 @@ function SyncStatusCard({ onSync }: { onSync: () => void }) {
 
   // Refresh whenever a sync task reaches "done".
   const syncDoneKey = tasks
-    .filter(t => t.type.startsWith("sync") && t.status === "done")
+    .filter(t => t.type.startsWith("sync") && ["done", "error", "partial", "interrupted", "cancelled"].includes(t.status))
     .map(t => t.id)
     .join(",")
   useEffect(() => { if (syncDoneKey) load() }, [syncDoneKey, load])
 
+  const incomplete = health?.runs?.some(r => r.status !== "done") ?? false
   const platforms = health?.platforms ?? []
   const lastSync = platforms
     .map(p => p.last_sync)
@@ -76,10 +77,10 @@ function SyncStatusCard({ onSync }: { onSync: () => void }) {
   return (
     <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
       <div className="mb-2 flex items-center gap-2 text-xs font-medium">
-        <span className={`h-1.5 w-1.5 rounded-full ${platforms.length ? "bg-[var(--color-success)]" : "bg-[var(--color-muted-foreground)]"}`} />
+        <span className={`h-1.5 w-1.5 rounded-full ${incomplete ? "bg-amber-500" : platforms.length ? "bg-[var(--color-success)]" : "bg-[var(--color-muted-foreground)]"}`} />
         数据状态
         {platforms.length > 0 && (
-          <span className="ml-auto rounded-full bg-[var(--color-success-subtle)] px-2 py-0.5 text-[10px] text-[var(--color-success)]">已同步</span>
+          <span className="ml-auto rounded-full px-2 py-0.5 text-xs" style={{ color: incomplete ? "var(--color-warning)" : "var(--color-success)", background: incomplete ? "var(--color-warning-subtle)" : "var(--color-success-subtle)" }}>{incomplete ? "有未完成项" : "已有记录"}</span>
         )}
       </div>
       <div className="space-y-1 text-xs text-[var(--color-muted-foreground)]">
@@ -87,7 +88,7 @@ function SyncStatusCard({ onSync }: { onSync: () => void }) {
           <p>尚未同步</p>
         ) : (
           <>
-            <div className="flex justify-between"><span>最后同步</span><span>{lastSync ? formatRelative(lastSync) : "未知"}</span></div>
+            <div className="flex justify-between"><span>最近数据写入</span><span>{lastSync ? formatRelative(lastSync) : "未知"}</span></div>
             <div className="flex justify-between"><span>数据源</span><span>{platforms.length} 个平台</span></div>
           </>
         )}
@@ -106,6 +107,28 @@ function SyncStatusCard({ onSync }: { onSync: () => void }) {
 // Pages reachable only via an in-page SubNav; the sidebar keeps their parent lit.
 const SIBLING_OF: Record<string, string> = { "/yearly": "/reports", "/tags": "/contacts" }
 
+type Theme = "light" | "dark"
+
+function ThemeSwitch({ theme, onChange }: { theme: Theme; onChange: (theme: Theme) => void }) {
+  return (
+    <div role="group" aria-label="界面主题" className="flex shrink-0 gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] p-1 shadow-sm">
+      {([{ value: "light", label: "浅色", icon: Sun }, { value: "dark", label: "深色", icon: Moon }] as const).map(({ value, label, icon: Icon }) => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={theme === value}
+          aria-label={`${label}主题`}
+          onClick={() => onChange(value)}
+          className={`flex items-center gap-1.5 rounded-md px-2.5 py-2 text-xs font-medium transition-colors ${theme === value ? "bg-[var(--color-primary)] text-[var(--color-primary-foreground)] shadow-sm" : "text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)] hover:text-[var(--color-foreground)]"}`}
+        >
+          <Icon aria-hidden="true" className="h-3.5 w-3.5" />
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function Inner() {
   const { content, close } = useDetailPanel()
   const navigate = useNavigate()
@@ -113,12 +136,11 @@ function Inner() {
   const analyze = useAnalyzeRunner()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [detailOpen, setDetailOpen] = useState(false)
-  const [theme, setTheme] = useState<"dark" | "light">(
-    () => (typeof document !== "undefined" && document.documentElement.dataset.theme === "light") ? "light" : "dark",
+  const [theme, setTheme] = useState<Theme>(
+    () => (typeof document !== "undefined" && document.documentElement.dataset.theme === "dark") ? "dark" : "light",
   )
 
-  const toggleTheme = () => {
-    const next = theme === "dark" ? "light" : "dark"
+  const changeTheme = (next: Theme) => {
     document.documentElement.dataset.theme = next
     try { localStorage.setItem("ca-theme", next) } catch { /* private mode */ }
     setTheme(next)
@@ -147,7 +169,7 @@ function Inner() {
   }
 
   return (
-    <div className="flex h-screen bg-[var(--color-background)] text-[var(--color-foreground)]">
+    <div className="flex h-dvh bg-[var(--color-background)] text-[var(--color-foreground)]">
       {/* 移动端遮罩 */}
       {sidebarOpen && (
         <div className="fixed inset-0 z-30 bg-black/50 md:hidden ca-fade-in" onClick={() => setSidebarOpen(false)} />
@@ -170,7 +192,7 @@ function Inner() {
           {navSections.map((section, si) => (
             <div key={si} className={si > 0 ? "mt-2" : ""}>
               {section.title && (
-                <p className="px-3.5 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{section.title}</p>
+                <p className="px-3.5 pb-1 pt-1 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-faint)]">{section.title}</p>
               )}
               {section.items.map(({ to, label, icon: Icon }) => (
                 <NavLink
@@ -213,33 +235,27 @@ function Inner() {
       </aside>
 
       {/* 主内容 */}
-      <main className="flex flex-1 flex-col overflow-hidden bg-[var(--color-background)]">
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-background)]">
         {/* 移动端顶栏 */}
         <div className="flex items-center gap-3 border-b border-[var(--color-border)] px-4 py-2 md:hidden">
           <button onClick={() => setSidebarOpen(true)} aria-label="打开菜单" className="text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground)]">
             <Menu className="h-5 w-5" />
           </button>
-          <span className="text-sm font-semibold">聊天分析器</span>
+          <span className="flex-1 text-sm font-semibold">{navSections.flatMap(s => s.items).find(i => i.to === location.pathname)?.label ?? ({ "/search": "搜索", "/yearly": "年度报告", "/tags": "标签" }[location.pathname] || "聊天分析器")}</span>
+          <ThemeSwitch theme={theme} onChange={changeTheme} />
         </div>
-        <div className="hidden h-[74px] shrink-0 items-center gap-4 border-b border-[var(--color-border)] bg-[var(--color-background)]/80 px-6 backdrop-blur md:flex">
+        <div className="hidden h-[74px] shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-background)]/80 px-4 backdrop-blur md:flex lg:gap-4 lg:px-6">
           <button
             onClick={() => navigate("/search")}
-            className="flex h-11 min-w-[320px] max-w-[520px] flex-1 items-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-4 text-left text-sm text-[var(--color-muted-foreground)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:bg-[var(--color-card-elevated)]"
+            className="flex h-11 min-w-0 max-w-[520px] flex-1 items-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-4 text-left text-sm text-[var(--color-muted-foreground)] shadow-sm transition-colors hover:border-[var(--color-border-strong)] hover:bg-[var(--color-card-elevated)]"
           >
-            <Search className="h-4 w-4" />
-            <span className="flex-1">搜索群聊、联系人、关键词...</span>
+            <Search className="h-4 w-4 shrink-0" />
+            <span className="flex-1 truncate">搜索群聊、联系人、关键词...</span>
           </button>
-          <button
-            onClick={toggleTheme}
-            title={theme === "dark" ? "切换到浅色" : "切换到深色"}
-            aria-label="切换主题"
-            className="flex h-11 w-11 items-center justify-center rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-muted-foreground)] shadow-sm transition-colors hover:bg-[var(--color-accent)] hover:text-[var(--color-foreground)]"
-          >
-            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          </button>
+          <ThemeSwitch theme={theme} onChange={changeTheme} />
           <button
             onClick={() => { void runSyncAll() }}
-            className="flex h-11 items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-4 text-sm font-medium text-[var(--color-foreground)] shadow-sm transition-colors hover:bg-[var(--color-accent)]"
+            className="flex h-11 shrink-0 items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-card)] px-4 text-sm font-medium text-[var(--color-foreground)] shadow-sm transition-colors hover:bg-[var(--color-accent)]"
           >
             <RefreshCw className="h-4 w-4" />
             同步
@@ -247,7 +263,7 @@ function Inner() {
           <button
             onClick={() => { void analyze.run() }}
             disabled={analyze.running}
-            className="flex h-11 items-center gap-2 rounded-lg bg-[var(--color-primary)] px-5 text-sm font-semibold text-[var(--color-primary-foreground)] shadow-md transition-colors hover:bg-[var(--color-primary-hover)] disabled:opacity-50"
+            className="flex h-11 shrink-0 items-center gap-2 rounded-lg bg-[var(--color-primary)] px-5 text-sm font-semibold text-[var(--color-primary-foreground)] shadow-md transition-colors hover:bg-[var(--color-primary-hover)] disabled:opacity-50"
           >
             <Play className="h-4 w-4 fill-current" />
             运行分析

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from app.core import database
 from app.core.config import load_config
 from app.api.stats import _fill_months, _kind_rows
+from app.services.persons import footprint, person_for_chat, suggest_for_chat
 from app.services.stats import infer_self_identities
 
 router = APIRouter()
@@ -38,8 +39,8 @@ async def list_contacts(
         conds.append("c.chat_type = ?")
         params.append(chat_type)
     if q:
-        conds.append("(c.chat_name LIKE ? OR c.chat_id LIKE ?)")
-        params.extend([f"%{q}%", f"%{q}%"])
+        conds.append("(c.chat_name LIKE ? OR c.chat_id LIKE ? OR EXISTS (SELECT 1 FROM contact_dossiers d WHERE d.platform=c.platform AND d.chat_id=c.chat_id AND d.short_note LIKE ?))")
+        params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
     if tag_id is not None:
         conds.append(
             """EXISTS (SELECT 1 FROM contact_tag_links l WHERE l.platform = c.platform
@@ -49,6 +50,8 @@ async def list_contacts(
     order = {"messages": "c.n DESC", "recent": "c.last_ts DESC", "name": "c.chat_name COLLATE NOCASE ASC"}.get(sort, "c.n DESC")
 
     async with database.connect_db() as db:
+        local_notes = {(r[0], r[1]): r[2] for r in await db.execute_fetchall(
+            "SELECT platform,chat_id,short_note FROM contact_dossiers WHERE short_note<>''")}
         rows = await db.execute_fetchall(
             f"""SELECT c.platform, c.chat_id, c.chat_name, c.chat_type, c.account, c.n, c.first_ts, c.last_ts
                 FROM stats_chats c WHERE {' AND '.join(conds)} ORDER BY {order} LIMIT ?""",
@@ -59,8 +62,9 @@ async def list_contacts(
                FROM contact_tag_links l JOIN contact_tags t ON t.id = l.tag_id
                WHERE l.status = 'confirmed'"""
         )
-        alias_rows = await db.execute_fetchall(
-            "SELECT canonical_name, platform, platform_id, platform_name FROM contact_aliases"
+        person_rows = await db.execute_fetchall(
+            """SELECT i.platform, i.value AS chat_id, p.id AS person_id, p.name FROM person_identities i
+               JOIN persons p ON p.id = i.person_id WHERE i.kind = 'chat'"""
         )
 
     tags_by: dict[tuple[str, str], list[dict]] = {}
@@ -68,19 +72,21 @@ async def list_contacts(
         tags_by.setdefault((r["platform"], r["chat_id"]), []).append(
             {"tag_id": r["tag_id"], "name": r["name"], "color": r["color"]}
         )
-    alias_by_id = {(r["platform"], r["platform_id"]): r["canonical_name"] for r in alias_rows}
-    alias_by_name = {(r["platform"], r["platform_name"]): r["canonical_name"] for r in alias_rows if r["platform_name"]}
+    person_by_chat = {(r["platform"], r["chat_id"]): (int(r["person_id"]), r["name"]) for r in person_rows}
     vips = set(load_config().vip_contacts)
 
     out = []
     for r in rows:
         key = (r["platform"], r["chat_id"])
-        canonical = alias_by_id.get(key) or alias_by_name.get((r["platform"], r["chat_name"]))
+        person = person_by_chat.get(key)
+        canonical = person[1] if person else None
         out.append({
             "platform": r["platform"], "chat_id": r["chat_id"], "chat_name": r["chat_name"],
+            "local_note": local_notes.get(key, ""),
             "chat_type": r["chat_type"], "account": r["account"] or "", "messages": int(r["n"]),
             "first_ts": r["first_ts"], "last_ts": r["last_ts"],
             "tags": tags_by.get(key, []),
+            "person_id": person[0] if person else None,
             "canonical_name": canonical,
             "is_vip": bool((r["chat_name"] and r["chat_name"] in vips) or (canonical and canonical in vips)),
         })
@@ -150,28 +156,23 @@ async def contact_profile(platform: str, chat_id: str, account: Optional[str] = 
                WHERE l.platform = ? AND l.chat_id = ? ORDER BY l.status, l.confidence DESC""",
             (platform, chat_id),
         )
-        aliases = await db.execute_fetchall(
-            """SELECT id, canonical_name, platform, platform_id, platform_name FROM contact_aliases
-               WHERE (platform = ? AND platform_id = ?) OR (platform = ? AND platform_name = ?)""",
-            (platform, chat_id, platform, chat_name),
-        )
-        canonical = aliases[0]["canonical_name"] if aliases else None
-        linked = []
-        if canonical:
-            linked = await db.execute_fetchall(
-                """SELECT id, canonical_name, platform, platform_id, platform_name FROM contact_aliases
-                   WHERE canonical_name = ? ORDER BY platform""",
-                (canonical,),
-            )
+        person = await person_for_chat(db, platform, chat_id)
+        canonical = person["name"] if person else None
+        person_fp = await footprint(db, int(person["id"])) if person else None
+        candidates = await suggest_for_chat(db, platform, chat_id, chat_name) if m["chat_type"] == "private" else []
         profile = await db.execute_fetchall(
             "SELECT summary, summary_generated_at FROM chat_profiles WHERE platform = ? AND chat_id = ?",
             (platform, chat_id),
         )
+        # Stable key first; the name match only catches rows the startup
+        # backfill couldn't resolve.
         knowledge = await db.execute_fetchall(
             """SELECT id, title, content, tags, created_at FROM knowledge_items
-               WHERE source_chat = ? ORDER BY created_at DESC LIMIT 20""",
-            (chat_name,),
-        ) if chat_name else []
+               WHERE (source_platform = ? AND source_chat_id = ?)
+                  OR (source_chat_id IS NULL AND source_chat = ?)
+               ORDER BY created_at DESC LIMIT 20""",
+            (platform, chat_id, chat_name or ""),
+        )
         todos = await db.execute_fetchall(
             """SELECT COUNT(*) AS total, SUM(CASE WHEN a.done = 0 THEN 1 ELSE 0 END) AS open_count
                FROM analysis_results a JOIN messages mm ON mm.id = a.message_id
@@ -244,7 +245,9 @@ async def contact_profile(platform: str, chat_id: str, account: Optional[str] = 
         "senders": sender_list,
         "tags": [dict(r) for r in tags],
         "canonical_name": canonical,
-        "aliases": [dict(r) for r in (linked or aliases)],
+        "person": person,
+        "footprint": person_fp,
+        "identity_candidates": candidates,
         "is_vip": bool((chat_name and chat_name in vips) or (canonical and canonical in vips)),
         "summary": profile[0]["summary"] if profile else None,
         "summary_generated_at": profile[0]["summary_generated_at"] if profile else None,

@@ -4,8 +4,10 @@ import { toast } from "sonner"
 import { fetchAPI, getErrorMessage } from "@/lib/api"
 import { useGlobalEvents } from "@/lib/GlobalEventsContext"
 import { cn } from "@/lib/utils"
+import { useTaskRunner } from "@/hooks/useTaskRunner"
 
 const TASK_LABEL: Record<string, string> = {
+  contact_dossier: "联系人全量分析",
   sync_wechat: "微信同步",
   sync_qq: "QQ 同步",
   sync_telegram: "Telegram 同步",
@@ -18,15 +20,27 @@ const TASK_LABEL: Record<string, string> = {
   sync_all: "全平台同步",
 }
 
+function syncErrorLabel(error?: string | null) {
+  if (error === "RuntimeError" || error === "HTTPStatusError") {
+    return `旧记录只保存了 ${error}，重试后可查看具体原因`
+  }
+  if (error === "CacheIdentityConflict") return "缓存和已入库消息的 ID 相同、时间不同，已停止合并该会话"
+  if (error === "TargetUnavailableOrExcluded") return "会话未出现在当前同步范围内"
+  if (error === "CacheUnavailable") return "本机历史缓存不可用"
+  return error || "历史尚未读完"
+}
+
 function StatusIcon({ status }: { status: string }) {
   if (status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--color-info)]" />
   if (status === "done") return <CheckCircle2 className="h-3.5 w-3.5 text-[var(--color-success)]" />
   if (status === "error") return <AlertCircle className="h-3.5 w-3.5 text-[var(--color-destructive)]" />
+  if (status === "partial" || status === "interrupted") return <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
   if (status === "cancelled") return <Square className="h-3.5 w-3.5 text-[var(--color-muted-foreground)]" />
   return <Activity className="h-3.5 w-3.5 text-[var(--color-muted-foreground)]" />
 }
 
 export function GlobalTaskBar() {
+  const { run } = useTaskRunner()
   const { tasks } = useGlobalEvents()
   const [expanded, setExpanded] = useState(false)
   const [hidden, setHidden] = useState<Set<string>>(new Set())
@@ -84,10 +98,17 @@ export function GlobalTaskBar() {
         <div className="border-t border-[var(--color-border)] px-4 py-2 space-y-1">
           {visible.length === 0 && <p className="text-xs text-[var(--color-muted-foreground)]">无任务</p>}
           {visible.slice().reverse().map(t => (
-            <div key={t.id} className="flex items-center gap-2 text-xs">
+            <div key={t.id} className="flex flex-wrap items-center gap-2 text-xs">
               <StatusIcon status={t.status} />
               <span className="font-medium">{TASK_LABEL[t.type] || t.type}</span>
               <span className="flex-1 truncate text-[var(--color-muted-foreground)]">{t.message}</span>
+              {t.journal_error && <span className="text-amber-500">任务记录保存失败</span>}
+              {t.request && ["partial", "interrupted", "cancelled", "error"].includes(t.status) && (
+                <button className="underline" onClick={() => void run({
+                  taskType: t.type, loadingText: "继续同步...",
+                  start: () => fetchAPI<{ task_id: string }>(`/tasks/${t.id}/retry`, { method: "POST" }),
+                })}>继续未完成会话</button>
+              )}
               {t.status === "running" && (
                 <>
                   <span className="tabular-nums text-[var(--color-muted-foreground)]">{t.progress}%</span>
@@ -105,6 +126,16 @@ export function GlobalTaskBar() {
                 <button onClick={() => dismiss(t.id)} aria-label="清除" className="rounded p-0.5 text-[var(--color-muted-foreground)] hover:bg-[var(--color-accent)]">
                   <X className="h-3 w-3" />
                 </button>
+              )}
+              {t.results && Object.values(t.results).some(r => r.details.some(d => d.status !== "done")) && (
+                <details className="basis-full pl-5 text-[var(--color-muted-foreground)]">
+                  <summary className="cursor-pointer">失败与待补明细</summary>
+                  <div className="max-h-48 overflow-auto py-2 space-y-1">
+                    {Object.entries(t.results).flatMap(([platform, r]) => r.details.filter(d => d.status !== "done").map(d => (
+                      <p key={`${platform}:${d.chat_id}`}>{platform} · {d.name} · {d.status === "pending" ? "待补" : "失败"} · {syncErrorLabel(d.error)}</p>
+                    )))}
+                  </div>
+                </details>
               )}
             </div>
           ))}

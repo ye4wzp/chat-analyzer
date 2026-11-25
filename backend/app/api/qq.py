@@ -5,6 +5,8 @@ from app.core.config import load_config
 from app.core.runners import run_qq_install, run_qq_sync
 from app.core.tasks import create_task, is_task_running, spawn_cancellable
 
+from app.models.sync import QQSyncRequest
+
 router = APIRouter()
 
 
@@ -12,6 +14,12 @@ router = APIRouter()
 async def qq_test():
     from app.services.sync.qq_qce import QCEError, test_connection
     cfg = load_config().qq
+    if cfg.source == "local":
+        from app.services.sync.qq_local import LocalSourceError, test_source
+        try:
+            return await test_source(cfg)
+        except LocalSourceError as e:
+            raise HTTPException(400, str(e)) from e
     if not cfg.token:
         raise HTTPException(400, "请先填写 QCE token")
     try:
@@ -23,11 +31,12 @@ async def qq_test():
 
 
 @router.post("/api/sync/qq")
-async def sync_qq():
-    if is_task_running("sync_qq"):
+async def sync_qq(body: QQSyncRequest = QQSyncRequest()):
+    from app.api.sync import SYNC_TASK_TYPES
+    if any(is_task_running(t) for t in SYNC_TASK_TYPES):
         raise HTTPException(409, "QQ 同步正在运行")
     task_id = create_task("sync_qq")
-    spawn_cancellable(task_id, run_qq_sync(task_id))
+    spawn_cancellable(task_id, run_qq_sync(task_id, mode=body.mode, chat_ids=body.chat_ids))
     return {"task_id": task_id}
 
 

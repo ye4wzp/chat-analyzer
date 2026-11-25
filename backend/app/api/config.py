@@ -40,6 +40,25 @@ async def update_config(body: ConfigUpdate):
         cfg.chat_filter.chats.append(body.add_chat)
     if body.remove_chat and body.remove_chat in cfg.chat_filter.chats:
         cfg.chat_filter.chats.remove(body.remove_chat)
+    if body.add_chat_ref and body.add_chat_ref.key() not in {r.key() for r in cfg.chat_filter.refs}:
+        cfg.chat_filter.refs.append(body.add_chat_ref)
+    if body.remove_chat_ref:
+        cfg.chat_filter.refs = [r for r in cfg.chat_filter.refs if r.key() != body.remove_chat_ref.key()]
+    if body.sync_exclude_channels is not None:
+        cfg.sync_scope.exclude_channels = body.sync_exclude_channels
+    additions = list(body.add_sync_excludes or [])
+    if body.add_sync_exclude:
+        additions.append(body.add_sync_exclude)
+    if additions:
+        existing = {r.key() for r in cfg.sync_scope.exclude_chats}
+        for ref in additions:
+            if ref.key() not in existing:
+                cfg.sync_scope.exclude_chats.append(ref)
+                existing.add(ref.key())
+    if body.remove_sync_exclude:
+        cfg.sync_scope.exclude_chats = [r for r in cfg.sync_scope.exclude_chats if r.key() != body.remove_sync_exclude.key()]
+    if body.keep_raw_text is not None:
+        cfg.storage.keep_raw_text = body.keep_raw_text
     if body.add_vip and body.add_vip not in cfg.vip_contacts:
         cfg.vip_contacts.append(body.add_vip)
     if body.remove_vip and body.remove_vip in cfg.vip_contacts:
@@ -66,6 +85,12 @@ async def update_config(body: ConfigUpdate):
         cfg.llm.api_key = body.llm_api_key
     if body.llm_embedding_model is not None:
         cfg.llm.embedding_model = body.llm_embedding_model
+    if body.qq_source is not None:
+        cfg.qq.source = body.qq_source
+    if body.qq_local_path is not None:
+        cfg.qq.local_path = body.qq_local_path.strip()
+    if body.qq_local_account is not None:
+        cfg.qq.local_account = body.qq_local_account.strip()
     if body.qq_enabled is not None:
         cfg.qq.enabled = body.qq_enabled
     if body.qq_host is not None:

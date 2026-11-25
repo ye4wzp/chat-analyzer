@@ -311,7 +311,7 @@ export default function Dashboard() {
                     <div className="flex items-center gap-2">
                       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-secondary)] text-xs font-semibold">{idx + 1}</span>
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">{chat.chat_name || chat.chat_id}</p>
+                        <p className="conversation-name">{chat.chat_name || chat.chat_id}</p>
                         <p className="text-xs text-[var(--color-muted-foreground)]">{PLATFORM_LABEL[chat.platform] || chat.platform}</p>
                       </div>
                     </div>
@@ -349,7 +349,7 @@ export default function Dashboard() {
                     <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[var(--color-muted-foreground)]">{item.content}</p>
                     <div className="mt-2 flex flex-wrap gap-1">
                       {parseTags(item).slice(0, 3).map(tag => (
-                        <span key={tag} className="rounded-full bg-[var(--color-surface-3)] px-2 py-0.5 text-[10px] text-[var(--color-muted-foreground)]">{tag}</span>
+                        <span key={tag} className="rounded-full bg-[var(--color-surface-3)] px-2 py-0.5 text-xs text-[var(--color-muted-foreground)]">{tag}</span>
                       ))}
                     </div>
                   </div>

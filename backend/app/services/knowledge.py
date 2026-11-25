@@ -14,6 +14,8 @@ def parse_source_message_ids(raw: object) -> list[int]:
     else:
         return []
 
+    if not isinstance(values, list):
+        return []
     result = []
     for value in values:
         try:
@@ -61,30 +63,51 @@ def _merge_entities(existing_raw: str | None, knowledge_id: int, tags: list) -> 
 
 
 async def _is_duplicate(db: aiosqlite.Connection, item: dict) -> bool:
+    # Similar titles can describe different incidents or a later correction.
     rows = await db.execute_fetchall(
-        "SELECT 1 FROM knowledge_items WHERE title=? AND (source_chat=? OR content=?) LIMIT 1",
-        (item.get("title", ""), item.get("source_chat", ""), item.get("content", "")),
-    )
-    return bool(rows)
+        "SELECT source_message_ids,source_platform,source_chat_id,title FROM knowledge_items WHERE content=?",
+        (item.get("content", ""),))
+    ids = set(parse_source_message_ids(item.get("source_message_ids")))
+    for raw, platform, cid, title in rows:
+        existing = set(parse_source_message_ids(raw))
+        if ids and ids == existing and title == item.get("title", ""):
+            return True
+        if not ids and not existing and item.get("source_platform") and item.get("source_chat_id"):
+            if (platform, cid, title) == (item["source_platform"], item["source_chat_id"], item.get("title", "")):
+                return True
+    return False
 
 
 async def save_knowledge_items(db: aiosqlite.Connection, items: list[dict]) -> int:
     """Insert knowledge items and derived per-message analysis_results.
 
-    Exact duplicates (same title within the same chat, or identical content)
+    Exact duplicates (same source set, title and content)
     are skipped — overlapping analysis windows produce them. A message already
     categorized 'todo' is never downgraded by a later non-todo item."""
     saved = 0
     for item in items:
         if await _is_duplicate(db, item):
             continue
+        source_ids = parse_source_message_ids(item.get("source_message_ids", "[]"))
+        # Stable provenance: (platform, chat_id) of the first source message.
+        # The display name (source_chat) is kept for rendering only.
+        src_platform, src_chat_id = item.get("source_platform"), item.get("source_chat_id")
+        if (not src_platform or not src_chat_id) and source_ids:
+            hit = await db.execute_fetchall(
+                "SELECT platform, chat_id FROM messages WHERE id = ? LIMIT 1", (source_ids[0],)
+            )
+            if hit:
+                src_platform, src_chat_id = hit[0][0], hit[0][1]
         cursor = await db.execute(
-            """INSERT INTO knowledge_items (title, content, source_chat, source_message_ids, tags, batch_id)
-               VALUES (?,?,?,?,?,?)""",
+            """INSERT INTO knowledge_items
+               (title, content, source_chat, source_platform, source_chat_id, source_message_ids, tags, batch_id)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (
                 item.get("title", ""),
                 item.get("content", ""),
                 item.get("source_chat", ""),
+                src_platform,
+                src_chat_id,
                 item.get("source_message_ids", "[]"),
                 json.dumps(item.get("tags", []), ensure_ascii=False),
                 item.get("batch_id", ""),
@@ -95,7 +118,6 @@ async def save_knowledge_items(db: aiosqlite.Connection, items: list[dict]) -> i
         category = category_for_knowledge(item)
         urgency = int(item.get("urgency") or 3)
         summary = item.get("content", "")
-        source_ids = parse_source_message_ids(item.get("source_message_ids", "[]"))
         if not source_ids:
             continue
 

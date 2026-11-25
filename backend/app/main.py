@@ -14,12 +14,15 @@ from app.api import (
     chats,
     config,
     contacts,
+    contact_dossier,
     dashboard,
     inbox,
     knowledge,
+    maintenance,
     mentions,
     messages,
     payments,
+    persons,
     qq,
     reports,
     scheduler,
@@ -31,6 +34,8 @@ from app.api import (
     tasks,
     telegram,
     todos,
+    wechat_articles,
+    wechat_archive,
 )
 from app.core.config import get_api_token
 from app.core.database import DB_PATH, init_db
@@ -50,6 +55,18 @@ async def lifespan(_app: FastAPI):
     acquire_instance_lock(DATA_DIR)
 
     await init_db()
+    from app.services.contact_dossier_analysis import recover_interrupted
+    await recover_interrupted()
+    from app.core.tasks import restore_tasks
+    restore_tasks()
+    from app.core.config import migrate_chat_filter_names
+    try:
+        await migrate_chat_filter_names()
+    except Exception as e:  # never block startup on a config nicety
+        import logging
+        logging.getLogger("app").warning("chat_filter migration skipped: %s", e)
+    from app.services.wechat_archive import run_archive
+    archive_task = asyncio.create_task(run_archive())
     loop_task = asyncio.create_task(scheduler_loop())
     # Bring the stats rollups up to date in the background (no-op when current).
     from app.services.stats import refresh_on_startup
@@ -58,12 +75,18 @@ async def lifespan(_app: FastAPI):
         yield
     finally:
         loop_task.cancel()
+        archive_task.cancel()
+        await asyncio.gather(archive_task, return_exceptions=True)
         release_instance_lock()
 
 
+# Any loopback origin is fine: the dev server (5173) and the backend itself
+# (whichever port it was started on) are both local. The DNS-rebinding guard in
+# api_security_guard is what actually protects the token-less default.
 ALLOWED_ORIGINS = [
     "http://localhost:5173", "http://127.0.0.1:5173",
     "http://localhost:8000", "http://127.0.0.1:8000",
+    "http://localhost:8001", "http://127.0.0.1:8001",
 ]
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
@@ -106,8 +129,15 @@ async def api_security_guard(request: Request, call_next):
 
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             origin = request.headers.get("origin")
-            if origin and origin not in ALLOWED_ORIGINS:
-                return JSONResponse({"detail": "cross-origin request blocked"}, status_code=403)
+            if origin:
+                # Same-origin means the page was served by *this* backend, on
+                # whatever port it happens to run on — compare against the
+                # request's own Host. Other local ports (another dev server) are
+                # still foreign origins and stay blocked.
+                from urllib.parse import urlparse
+                same_origin = urlparse(origin).netloc.lower() == (request.headers.get("host") or "").lower()
+                if origin not in ALLOWED_ORIGINS and not same_origin:
+                    return JSONResponse({"detail": "cross-origin request blocked"}, status_code=403)
 
         if token:
             supplied = (
@@ -121,8 +151,8 @@ async def api_security_guard(request: Request, call_next):
 
 
 for module in (
-    dashboard, messages, chats, search, config, ask, reports, stats, contacts, mentions, payments,
-    sync, qq, telegram, tasks, analyze, knowledge, scheduler, backups, inbox, tags, todos, aliases,
+    dashboard, messages, chats, search, config, ask, reports, stats, contacts, contact_dossier, mentions, payments, persons, maintenance,
+    sync, qq, telegram, tasks, analyze, knowledge, scheduler, backups, inbox, tags, todos, aliases, wechat_articles, wechat_archive,
 ):
     app.include_router(module.router)
 

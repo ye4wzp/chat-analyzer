@@ -12,9 +12,10 @@ from app.models.analyze import AnalyzeRequest
 
 
 async def _post_sync_scan() -> None:
-    """Run keyword trigger scan after a successful sync, then kick the stats
-    rollup. Best-effort — any failure here must not surface as a sync failure
-    since data already landed."""
+    """Post-ingest pipeline, run after anything that added messages (sync or
+    file import): keyword triggers inline, then the derived-data task (kind
+    backfill + stats rollups) in the background. Best-effort — a failure here
+    must not surface as a sync failure since the data already landed."""
     try:
         from app.services.triggers import scan_for_matches
         await scan_for_matches()
@@ -28,33 +29,102 @@ async def _post_sync_scan() -> None:
 
 
 async def run_stats_refresh(task_id: str, *, full: bool = False):
-    from app.services.stats import refresh
+    """Derived-data task: legacy kind backfill (no-op once caught up), then the
+    stats rollups. One task type ('stats') so the UI shows a single progress."""
+    from app.services.stats import backfill_kinds, refresh
     _tasks[task_id].update(status="running", progress=1, message="正在更新统计...")
     try:
+        backfilled = await backfill_kinds(progress=make_progress(task_id))
         result = await refresh(progress=make_progress(task_id), full=full)
-        _tasks[task_id].update(
-            status="done", progress=100,
-            message=f"统计已更新（处理 {result['processed']:,} 条）", **result,
-        )
+        msg = f"统计已更新（处理 {result['processed']:,} 条）"
+        if backfilled["processed"]:
+            msg += f"，类型归一 {backfilled['processed']:,} 条"
+        _tasks[task_id].update(status="done", progress=100, message=msg, **result)
     except Exception as e:
         _tasks[task_id].update(status="error", progress=0, message=str(e))
 
 
-async def run_sync(task_id: str, new_only: bool):
-    from app.services.sync.wechat import sync_new_messages, sync_sessions
-    from app.services.backup import maybe_backup_before_sync
+def sync_result_callback(task_id, platform, previous=None):
+    from app.services.sync.result import merge_attempt
+    def save(result):
+        results = dict(_tasks[task_id].get("results", {}))
+        results[platform] = json.loads(json.dumps(merge_attempt(previous, result) if previous else result))
+        _tasks[task_id].update(results=results)
+    return save
 
-    _tasks[task_id]["status"] = "running"
-    _tasks[task_id]["message"] = "正在同步微信数据..."
-    _tasks[task_id]["progress"] = 30
 
+def finish_sync_task(task_id):
+    from app.services.sync.result import result_status
+    results = _tasks[task_id].get("results", {})
+    states = [result_status(r) for r in results.values()]
+    status = "done" if states and all(s == "done" for s in states) else "error" if states and all(s == "error" for s in states) else "partial"
+    labels = {"wechat": "微信", "qq": "QQ", "telegram": "Telegram"}
+    parts = []
+    for platform, r in results.items():
+        failed = sum(d["status"] == "failed" for d in r.get("details", []))
+        pending = sum(d.get("count", 1) for d in r.get("details", []) if d["status"] == "pending")
+        parts.append(f"{labels.get(platform, platform)} +{r['imported']}，成功 {r.get('chats', 0)}，失败 {failed}，待补 {pending}")
+    label = {"done": "同步完成", "partial": "部分完成", "error": "同步失败"}[status]
+    _tasks[task_id].update(status=status, progress=100, message=label + "：" + " | ".join(parts))
+
+
+async def sync_platform(task_id, platform, *, new_only=False, mode=None, chat_ids=None, skip_ids=(), live_only=()):
+    from app.services.sync.result import error_reason
+    baseline = _tasks[task_id].get("results", {}).get(platform)
+    callback = sync_result_callback(task_id, platform, baseline)
+    progress = make_progress(task_id)
     try:
-        await maybe_backup_before_sync()  # throttled 5min, swallows failures
-        count = await (sync_new_messages() if new_only else sync_sessions())
-        await _post_sync_scan()
-        _tasks[task_id].update(status="done", progress=100, message=f"同步完成，新增 {count} 条消息")
+        if platform == "wechat":
+            from app.services.sync.wechat import sync_new_messages, sync_sessions
+            if new_only and mode is None:
+                count = await sync_new_messages()
+                result = {"platform": platform, "imported": count, "chats": 0, "details": [], "targets": 0}
+            else:
+                result = await sync_sessions(mode=mode or "incremental", progress=progress,
+                                             on_result=callback, chat_ids=chat_ids, skip_ids=skip_ids, live_only=live_only,
+                                             expected_cache=(baseline or {}).get("cache_targets", ()))
+        elif platform == "qq":
+            options = dict(progress=progress, on_result=callback, chat_ids=chat_ids, skip_ids=skip_ids)
+            cfg = load_config()
+            if cfg.qq.source == "local":
+                from app.services.sync.qq_local import sync_local
+                result = await sync_local(cfg, mode=mode, **options)
+            else:
+                from app.services.sync.qq_qce import sync_all
+                result = await sync_all(**options)
+        else:
+            from app.services.sync.telegram_live import sync_all
+            result = await sync_all(progress=progress, on_result=callback, chat_ids=chat_ids, skip_ids=skip_ids)
+        result["finished"] = True
+        callback(result)
     except Exception as e:
-        _tasks[task_id].update(status="error", progress=0, message=str(e))
+        previous = _tasks[task_id].get("results", {}).get(platform, {})
+        result = {**previous, "platform": platform, "targets": previous.get("targets", 1),
+                  "chats": previous.get("chats", 0), "imported": previous.get("imported", 0), "finished": False,
+                  "details": [d for d in previous.get("details", []) if d["chat_id"] != "@platform"] +
+                             [{"chat_id": "@platform", "name": platform, "status": "failed",
+                               "error": error_reason(e), "imported": 0}]}
+        sync_result_callback(task_id, platform)(result)
+
+
+async def run_sync(task_id: str, new_only: bool = False, *, mode=None, chat_ids=None):
+    await run_platforms_sync(task_id, ["wechat"], new_only=new_only, mode=mode, selections={"wechat": chat_ids})
+
+
+async def run_platforms_sync(task_id, platforms, *, new_only=False, mode=None, selections=None, skips=None, live_only=()):
+    from app.services.backup import maybe_backup_before_sync
+    if not _tasks[task_id].get("request"):
+        _tasks[task_id].update(request={"platforms": platforms, "new_only": new_only, "mode": mode,
+                                        "selections": selections})
+    _tasks[task_id].update(status="running", progress=1, message="准备同步...")
+    await maybe_backup_before_sync()
+    for platform in platforms:
+        _tasks[task_id].update(message=f"正在同步 {platform}...")
+        await sync_platform(task_id, platform, new_only=new_only, mode=mode,
+                            chat_ids=(selections or {}).get(platform),
+                            skip_ids=(skips or {}).get(platform, ()), live_only=live_only)
+    await _post_sync_scan()
+    finish_sync_task(task_id)
 
 
 async def run_import(task_id: str, platform: str, path: str):
@@ -79,50 +149,12 @@ async def run_import(task_id: str, platform: str, path: str):
         _tasks[task_id].update(status="error", progress=0, message=str(e))
 
 
-async def run_qq_sync(task_id: str):
-    from app.services.sync.qq_qce import sync_all
-    from app.services.backup import maybe_backup_before_sync
-    _tasks[task_id]["status"] = "running"
-    _tasks[task_id]["message"] = "正在同步 QQ..."
-    _tasks[task_id]["progress"] = 5
-    try:
-        await maybe_backup_before_sync()
-        result = await sync_all(progress=make_progress(task_id))
-        await _post_sync_scan()
-        skipped = result.get("skipped") or []
-        pending = result.get("pending") or []
-        # 全部聊天都被跳过就是失败，不能报“完成”——否则真实故障会被 0/0 掩盖。
-        failed_all = bool(skipped) and not result["chats"]
-        message = ("同步失败" if failed_all else "同步完成")
-        message += f": {result['imported']} 条消息 ({result['chats']} 个聊天)"
-        if pending:
-            message += f"，{len(pending)} 个会话旧历史未翻完（再点一次继续）"
-        if skipped:
-            head = "、".join(skipped[:3]) + (" 等" if len(skipped) > 3 else "")
-            message += f"，{len(skipped)} 个跳过: {head}"
-        _tasks[task_id].update(
-            status="error" if failed_all else "done", progress=100, message=message,
-        )
-    except Exception as e:
-        _tasks[task_id].update(status="error", progress=0, message=str(e))
+async def run_qq_sync(task_id: str, *, mode=None, chat_ids=None):
+    await run_platforms_sync(task_id, ["qq"], mode=mode, selections={"qq": chat_ids})
 
 
 async def run_telegram_sync(task_id: str):
-    from app.services.sync.telegram_live import sync_all
-    from app.services.backup import maybe_backup_before_sync
-    _tasks[task_id]["status"] = "running"
-    _tasks[task_id]["message"] = "正在同步 Telegram..."
-    _tasks[task_id]["progress"] = 5
-    try:
-        await maybe_backup_before_sync()
-        result = await sync_all(progress=make_progress(task_id))
-        await _post_sync_scan()
-        _tasks[task_id].update(
-            status="done", progress=100,
-            message=f"同步完成: {result['imported']} 条消息 ({result['chats']} 个对话)",
-        )
-    except Exception as e:
-        _tasks[task_id].update(status="error", progress=0, message=str(e))
+    await run_platforms_sync(task_id, ["telegram"])
 
 
 async def run_embed_knowledge(task_id: str):
@@ -267,7 +299,7 @@ async def run_tag_batch(
 
 _MSG_COLUMNS = ", ".join(
     f"m.{c}" for c in
-    ("id", "platform", "chat_id", "chat_name", "sender_id", "sender_name", "content", "msg_type", "timestamp")
+    ("id", "platform", "chat_id", "chat_name", "sender_id", "sender_name", "content", "msg_type", "kind", "timestamp")
 )
 
 
@@ -287,14 +319,33 @@ def _scope_conditions(req: AnalyzeRequest, cfg) -> tuple[list[str], list]:
         placeholders = ",".join("?" * len(chat_names))
         conditions.append(f"m.chat_name IN ({placeholders})")
         params.extend(chat_names)
-    elif cfg.chat_filter.chats:
-        placeholders = ",".join("?" * len(cfg.chat_filter.chats))
-        if cfg.chat_filter.mode == "whitelist":
-            conditions.append(f"m.chat_name IN ({placeholders})")
-        else:
-            conditions.append(f"m.chat_name NOT IN ({placeholders})")
-        params.extend(cfg.chat_filter.chats)
+    else:
+        clause, clause_params = chat_filter_clause(cfg.chat_filter, alias="m")
+        if clause:
+            conditions.append(clause)
+            params.extend(clause_params)
     return conditions, params
+
+
+def chat_filter_clause(cf, *, alias: str = "m") -> tuple[str, list]:
+    """SQL for the analysis scope. Keyed on (platform, chat_id) via `refs`;
+    legacy display names in `chats` are still honoured until the startup
+    migration has resolved them all."""
+    parts: list[str] = []
+    params: list = []
+    if cf.refs:
+        pairs = " OR ".join(f"({alias}.platform = ? AND {alias}.chat_id = ?)" for _ in cf.refs)
+        parts.append(f"({pairs})")
+        for r in cf.refs:
+            params.extend([r.platform, r.chat_id])
+    if cf.chats:
+        ph = ",".join("?" * len(cf.chats))
+        parts.append(f"{alias}.chat_name IN ({ph})")
+        params.extend(cf.chats)
+    if not parts:
+        return "", []
+    inner = " OR ".join(parts)
+    return (f"({inner})" if cf.mode == "whitelist" else f"NOT ({inner})"), params
 
 
 async def _select_unanalyzed(db, conditions: list[str], params: list, limit: int) -> list[dict]:
@@ -440,14 +491,8 @@ async def run_analyze(task_id: str, req: AnalyzeRequest):
             )
             svc.rejected_examples = [r["title"] for r in rejected]
 
-            vip_extra: set[str] = set()
-            if cfg.vip_contacts:
-                placeholders = ",".join("?" * len(cfg.vip_contacts))
-                alias_rows = await db.execute_fetchall(
-                    f"SELECT platform_id, platform_name FROM contact_aliases WHERE canonical_name IN ({placeholders})",
-                    cfg.vip_contacts,
-                )
-                vip_extra = {v for row in alias_rows for v in (row["platform_id"], row["platform_name"]) if v}
+            from app.services.persons import vip_identity_values
+            vip_extra = await vip_identity_values(db, cfg.vip_contacts)
 
         _tasks[task_id]["progress"] = 30
         _tasks[task_id]["message"] = f"找到 {len(messages)} 条消息，开始分析..."

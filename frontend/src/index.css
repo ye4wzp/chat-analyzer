@@ -2,11 +2,15 @@
 
 /* ============================================================
    Cool Slate · 冷峻终端 — 数据工作台设计系统
-   深色为主，[data-theme="light"] 提供浅色对照。
+   默认浅色，通过 data-theme 切换浅色 / 深色。
    旧变量名全部保留并重映射到 Cool Slate，组件零改动即换肤；
    新增 surface 层级 / text 层级 / 语义弱底 / 图表同色相阶梯 / 等宽字体。
    ============================================================ */
 @theme {
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.45;
+  --text-sm: 0.9375rem;
+  --text-sm--line-height: 1.55;
   /* ===== Surface ===== */
   --color-background: oklch(0.165 0.012 250);
   --color-bg-subtle: oklch(0.145 0.012 250);
@@ -32,10 +36,10 @@
   --color-secondary: oklch(0.232 0.014 250);
   --color-secondary-foreground: oklch(0.765 0.012 250);
   --color-muted: oklch(0.232 0.014 250);
-  --color-muted-foreground: oklch(0.595 0.014 252);
+  --color-muted-foreground: oklch(0.739 0.014 252);
   --color-text-secondary: oklch(0.765 0.012 250);
-  --color-text-muted: oklch(0.595 0.014 252);
-  --color-text-faint: oklch(0.470 0.014 252);
+  --color-text-muted: oklch(0.739 0.014 252);
+  --color-text-faint: oklch(0.685 0.014 252);
   --color-accent: oklch(0.305 0.060 235);
   --color-accent-foreground: oklch(0.705 0.142 233);
   --color-border: oklch(0.288 0.016 252);
@@ -79,7 +83,10 @@
 }
 
 /* ===== Light counterpart ===== */
+:root { color-scheme: dark; }
+
 [data-theme="light"] {
+  color-scheme: light;
   --color-background: oklch(0.975 0.004 250);
   --color-bg-subtle: oklch(0.950 0.006 250);
   --color-foreground: oklch(0.220 0.018 252);
@@ -102,10 +109,10 @@
   --color-secondary: oklch(0.966 0.006 250);
   --color-secondary-foreground: oklch(0.430 0.016 252);
   --color-muted: oklch(0.966 0.006 250);
-  --color-muted-foreground: oklch(0.560 0.014 252);
+  --color-muted-foreground: oklch(0.500 0.014 252);
   --color-text-secondary: oklch(0.430 0.016 252);
-  --color-text-muted: oklch(0.560 0.014 252);
-  --color-text-faint: oklch(0.665 0.012 252);
+  --color-text-muted: oklch(0.500 0.014 252);
+  --color-text-faint: oklch(0.485 0.012 252);
   --color-accent: oklch(0.930 0.040 235);
   --color-accent-foreground: oklch(0.520 0.165 240);
   --color-border: oklch(0.905 0.008 250);
@@ -116,7 +123,7 @@
   --color-success: oklch(0.540 0.140 158);
   --color-success-foreground: oklch(0.995 0.005 158);
   --color-success-subtle: oklch(0.930 0.045 158);
-  --color-warning: oklch(0.620 0.130 70);
+  --color-warning: oklch(0.505 0.120 66);
   --color-warning-foreground: oklch(0.995 0.005 80);
   --color-warning-subtle: oklch(0.935 0.050 80);
   --color-info: oklch(0.560 0.135 230);
@@ -145,8 +152,8 @@ body {
   color: var(--color-foreground);
   margin: 0;
   font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.55;
+  font-size: 15px;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -185,3 +192,48 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible {
 @keyframes ca-fade-in { from { opacity: 0; } to { opacity: 1; } }
 .ca-slide-up { animation: ca-slide-up 0.22s ease-out; }
 .ca-fade-in { animation: ca-fade-in 0.2s ease-out; }
+
+.conversation-row {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-block-end: 1px solid var(--color-border);
+  border-inline-start: 3px solid transparent;
+  text-align: start;
+}
+.conversation-row:hover { background: var(--color-surface-2); }
+.conversation-row[aria-current="true"], .conversation-row[data-checked="true"] {
+  background: var(--color-primary-subtle);
+  border-inline-start-color: var(--color-primary);
+}
+.conversation-name, .conversation-source strong {
+  display: block;
+  color: var(--color-foreground);
+  font-size: 1rem;
+  line-height: 1.45;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.conversation-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  flex: none;
+  border-radius: 0.65rem;
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+.conversation-mark[data-platform="wechat"] { color: var(--color-success); background: var(--color-success-subtle); }
+.conversation-mark[data-platform="telegram"] { color: var(--color-info); background: var(--color-info-subtle); }
+.conversation-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: var(--text-xs);
+  color: var(--color-muted-foreground);
+}
+.conversation-source { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.15rem 0.65rem; min-width: 0; }
+.conversation-id { display: block; font: 0.78rem/1.45 var(--font-mono); overflow-wrap: anywhere; color: var(--color-muted-foreground); }

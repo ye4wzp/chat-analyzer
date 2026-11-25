@@ -14,6 +14,11 @@ interface Props {
 }
 
 export function QQCard({ config, onConfigChange }: Props) {
+  const [source, setSource] = useState(config.qq.source)
+  const [path, setPath] = useState(config.qq.local_path)
+  const [account, setAccount] = useState(config.qq.local_account)
+  const [failure, setFailure] = useState("")
+  const local = source === "local"
   const [host, setHost] = useState(config.qq.host)
   const [port, setPort] = useState(String(config.qq.port))
   const [token, setToken] = useState(config.qq.token)
@@ -34,16 +39,21 @@ export function QQCard({ config, onConfigChange }: Props) {
       const updated = await fetchAPI<Config>("/config", {
         method: "PUT",
         body: JSON.stringify({
-          qq_host: host,
-          qq_port: Number(port),
-          qq_token: isMasked ? undefined : token,
+          qq_source: source,
+          qq_local_path: path,
+          qq_local_account: account,
+          ...(!local && { qq_host: host, qq_port: Number(port), qq_token: isMasked ? undefined : token }),
           ...overrides,
         }),
       })
+      setPath(updated.qq.local_path)
+      setAccount(updated.qq.local_account)
+      setToken(updated.qq.token)
       onConfigChange(updated)
-      toast.success("已保存")
+      return true
     } catch (e) {
       toast.error(getErrorMessage(e))
+      return false
     } finally {
       setSaving(false)
     }
@@ -54,18 +64,21 @@ export function QQCard({ config, onConfigChange }: Props) {
     setTestResult(null)
     try {
       // Save first so backend uses fresh token
-      await save()
+      if (!await save()) { setTestStatus("idle"); return }
       const res = await fetchAPI<QQTestResponse>("/qq/test", { method: "POST" })
       setTestStatus("ok")
       setTestResult(res)
     } catch (e) {
+      setFailure(getErrorMessage(e))
       setTestStatus("fail")
       toast.error(getErrorMessage(e))
     }
   }
 
-  const sync = () => run({
-    start: () => fetchAPI<{ task_id: string }>("/sync/qq", { method: "POST" }),
+  const dirty = source !== config.qq.source || path !== config.qq.local_path || account !== config.qq.local_account ||
+    (!local && (host !== config.qq.host || Number(port) !== config.qq.port || token !== config.qq.token))
+  const sync = (mode: "incremental" | "repair" = "incremental") => run({
+    start: () => fetchAPI<{ task_id: string }>("/sync/qq", { method: "POST", body: JSON.stringify({ mode }) }),
     taskType: "sync_qq",
     loadingText: "QQ 同步启动中...",
   })
@@ -79,7 +92,7 @@ export function QQCard({ config, onConfigChange }: Props) {
             QQ
           </h3>
           <p className="text-xs text-[var(--color-muted-foreground)] mt-1">
-            通过 NapCat-QCE 自动拉取消息
+            {local ? "读取本机 QQ 消息数据库，支持私聊和群聊" : "通过 NapCat-QCE 自动拉取消息"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -89,6 +102,23 @@ export function QQCard({ config, onConfigChange }: Props) {
         </div>
       </div>
 
+      <label className="mb-4 flex items-center gap-3 text-sm">消息来源
+        <select className="rounded border px-2 py-1" value={source} onChange={e => {
+          setSource(e.target.value as typeof source); setTestStatus("idle"); setTestResult(null)
+        }}>
+          <option value="qce">NapCat-QCE</option>
+          <option value="local">本地数据库（qq-cli）</option>
+        </select>
+      </label>
+      {local ? <div className="space-y-3">
+        <label className="block text-sm">数据库所属的 QQ 账号
+          <Input value={account} onChange={e => setAccount(e.target.value)} placeholder="用于区分各账号的消息和同步进度" />
+        </label>
+        <label className="block text-sm">可读的消息库文件或目录
+          <Input value={path} onChange={e => setPath(e.target.value)} placeholder="默认 ~/.qqmac/plain/nt_msg.db" />
+        </label>
+        <p className="text-xs text-[var(--color-muted-foreground)]">首次读取已有历史。之后同步读取副本中的新增记录，并回查最近一天。更新副本后，可用“补查全部历史”找回更早的消息。</p>
+      </div> : <>
       <div className="mb-4">
         <QQLauncherPanel onConfigChange={onConfigChange} />
       </div>
@@ -137,16 +167,17 @@ export function QQCard({ config, onConfigChange }: Props) {
       </div>
       )}
 
+      </>}
       <div className="space-y-3 mt-3">
-        {testResult?.ok && (
+        {!dirty && testResult?.ok && (
           <div className="flex items-center gap-2 rounded-md bg-[var(--color-success)]/10 px-3 py-2 text-xs text-[var(--color-success)]">
             <CheckCircle2 className="h-3.5 w-3.5" />
             已连接 — {testResult.nick} ({testResult.uin})
           </div>
         )}
-        {testStatus === "fail" && !testResult && (
+        {!dirty && testStatus === "fail" && !testResult && (
           <div className="flex items-center gap-2 rounded-md bg-[var(--color-destructive)]/10 px-3 py-2 text-xs text-[var(--color-destructive)]">
-            <AlertCircle className="h-3.5 w-3.5" />连接失败，请检查 QCE 是否运行
+            <AlertCircle className="h-3.5 w-3.5" />{failure}
           </div>
         )}
 
@@ -155,8 +186,8 @@ export function QQCard({ config, onConfigChange }: Props) {
             {testStatus === "loading" && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             测试连接
           </Button>
-          {showAdvanced && (
-            <Button variant="outline" size="sm" onClick={() => save()} disabled={saving}>
+          {(local || showAdvanced || dirty) && (
+            <Button variant="outline" size="sm" onClick={async () => { if (await save()) toast.success("已保存") }} disabled={saving}>
               {saving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}保存
             </Button>
           )}
@@ -164,12 +195,14 @@ export function QQCard({ config, onConfigChange }: Props) {
             variant={enabled ? "secondary" : "default"}
             size="sm"
             onClick={() => save({ qq_enabled: !enabled })}
-            disabled={saving || (!token && !config.qq.token)}
+            disabled={saving || (!enabled && (local ? !account.trim() : !token))}
           >
             {enabled ? "停用" : "启用"}
           </Button>
+          {local && <Button variant="outline" size="sm" onClick={() => void sync("repair")}
+            disabled={syncing || saving || dirty || !enabled}>补查全部历史</Button>}
           <div className="ml-auto">
-            <Button size="sm" onClick={() => void sync()} disabled={syncing || !enabled}>
+            <Button size="sm" onClick={() => void sync()} disabled={syncing || saving || dirty || !enabled}>
               {syncing && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}立即同步
             </Button>
           </div>

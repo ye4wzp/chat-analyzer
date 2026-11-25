@@ -22,6 +22,7 @@ from app.core.config import load_config, save_config
 from app.core.database import DB_PATH
 from app.services.sync._common import (
     current_account,
+    in_sync_scope,
     parse_ts,
     read_sync_state,
     source_id,
@@ -336,107 +337,79 @@ def _chat_kind(entity: Any) -> tuple[str, str]:
     return "private", name or (getattr(entity, "username", "") or "")
 
 
-async def sync_all(progress: ProgressCB | None = None) -> dict[str, int]:
+async def sync_all(progress: ProgressCB | None = None, *, on_result=None, chat_ids=None, skip_ids=()) -> dict:
+    from app.services.sync.result import new_result, record_result, record_missing, error_reason
     client = await _ensure_client()
     if client is None:
         raise RuntimeError("Telegram 未登录")
 
-    async def _emit(pct: int, msg: str) -> None:
-        if progress is None:
-            return
-        rv = progress(pct, msg)
-        if asyncio.iscoroutine(rv):
-            await rv
+    async def emit(pct, message):
+        if progress:
+            value = progress(pct, message)
+            if asyncio.iscoroutine(value):
+                await value
 
-    await _emit(10, "正在拉取对话列表...")
+    cfg = load_config()
+    result = new_result("telegram")
     dialogs = []
     async for d in client.iter_dialogs():
-        dialogs.append(d)
-    if not dialogs:
-        await _emit(100, "无对话")
-        return {"chats": 0, "imported": 0}
-
-    total_imported = 0
-    chats_done = 0
+        cid = str(d.id)
+        kind, name = _chat_kind(d.entity)
+        if cid in skip_ids or (chat_ids is not None and cid not in chat_ids):
+            continue
+        if not in_sync_scope("telegram", cid, kind, cfg):
+            result["excluded"] += 1
+            continue
+        dialogs.append((d, cid, kind, name))
+    result["targets"] = len(dialogs)
+    await record_missing(result, chat_ids, [d[1] for d in dialogs], on_result)
     account = current_account("telegram")
-
     async with aiosqlite.connect(str(DB_PATH), timeout=60) as db:
-        await db.execute("PRAGMA busy_timeout=30000")
-        for i, dialog in enumerate(dialogs):
-            chat_id = str(dialog.id)
-            chat_type, chat_name = _chat_kind(dialog.entity)
-            pct = 15 + int(80 * i / len(dialogs))
-            await _emit(pct, f"同步: {chat_name or chat_id}")
-
-            last_id, _ = await read_sync_state(db, "telegram", chat_id)
-            min_id = int(last_id) if last_id and last_id.isdigit() else 0
-            max_seen = min_id
-
+        for i, (dialog, cid, kind, name) in enumerate(dialogs):
+            await emit(int(95 * i / max(1, len(dialogs))), f"Telegram {i + 1}/{len(dialogs)}：{name}")
+            last, _ = await read_sync_state(db, "telegram", cid)
+            checkpoint = int(last) if last and last.isdigit() else 0
+            latest = checkpoint
+            inserted = committed = pending = 0
             try:
-                async for msg in client.iter_messages(dialog.entity, min_id=min_id):
-                    if msg.action is not None:
-                        continue
-                    text = msg.message or ""
-                    if not text and not msg.media:
-                        continue
-                    if not text:
-                        text = "[媒体]"
-
-                    sender = msg.sender
-                    sender_name = ""
-                    if sender:
-                        if hasattr(sender, "first_name"):
-                            sender_name = " ".join(filter(None, [
-                                getattr(sender, "first_name", "") or "",
-                                getattr(sender, "last_name", "") or "",
-                            ])).strip() or (getattr(sender, "username", "") or "")
-                        else:
-                            sender_name = getattr(sender, "title", "") or ""
-
-                    ts = parse_ts(msg.date.timestamp() if msg.date else None)
-                    if not ts:
-                        continue
-
-                    raw = {
-                        "id": msg.id,
-                        "date": msg.date.isoformat() if msg.date else None,
-                        "from_id": getattr(msg.from_id, "user_id", None) if msg.from_id else None,
-                        "message": text,
-                        "media_type": msg.media.__class__.__name__ if msg.media else None,
-                    }
-                    total_imported += await upsert_message(
-                        db,
-                        platform="telegram",
-                        chat_id=chat_id,
-                        chat_name=chat_name,
-                        chat_type=chat_type,
-                        sender_id=str(getattr(sender, "id", "") or ""),
-                        sender_name=sender_name,
-                        content=text,
-                        msg_type="text" if msg.message else "media",
-                        timestamp=ts,
-                        src_id=source_id(msg.id, chat_id, ts, sender_name, text),
-                        raw=raw,
-                        account=account,
-                    )
-                    if msg.id > max_seen:
-                        max_seen = msg.id
-            except errors.FloodWaitError as e:
-                await _emit(pct, f"被限速，等待 {e.seconds} 秒...")
-                await asyncio.sleep(e.seconds)
-                continue
-            except Exception:
-                # network blips on a single dialog shouldn't kill the whole sync
-                continue
-
-            if max_seen > min_id:
-                await update_sync_state(
-                    db, platform="telegram", chat_id=chat_id, last_msg_id=str(max_seen)
-                )
-            # Always commit per-chat — releases the WAL writer lock for any
-            # parallel wechat/qq sync rather than holding it for the whole run.
-            await db.commit()
-            chats_done += 1
-
-    await _emit(100, f"完成，新增 {total_imported} 条消息（{chats_done} 个对话）")
-    return {"chats": chats_done, "imported": total_imported}
+                # Ascending batches preserve a contiguous prefix even after cancellation.
+                async for msg in client.iter_messages(dialog.entity, min_id=checkpoint, reverse=True):
+                    if msg.action is None and (msg.message or msg.media):
+                        sender = msg.sender
+                        name_parts = [getattr(sender, "first_name", ""), getattr(sender, "last_name", "")]
+                        sn = " ".join(filter(None, name_parts)).strip() or getattr(sender, "title", "") or getattr(sender, "username", "") or ""
+                        ts = parse_ts(msg.date.timestamp() if msg.date else None)
+                        if ts is None:
+                            raise ValueError("InvalidMessageTimestamp")
+                        text = msg.message or "[媒体]"
+                        inserted += await upsert_message(db, platform="telegram", chat_id=cid, chat_name=name,
+                            chat_type=kind, sender_id=str(getattr(msg, "sender_id", None) or getattr(sender, "id", "") or ""),
+                            sender_name=sn, content=text, msg_type="text" if msg.message else "media", timestamp=ts,
+                            src_id=source_id(msg.id, cid, ts, sn, text), account=account, cfg=cfg,
+                            raw={"id": msg.id, "date": msg.date.isoformat(), "message": text,
+                                 "reply_to_msg_id": getattr(getattr(msg, "reply_to", None), "reply_to_msg_id", None),
+                                 "media_type": type(msg.media).__name__ if msg.media else None})
+                    latest = max(latest, msg.id)
+                    pending += 1
+                    if pending >= 200:
+                        await update_sync_state(db, platform="telegram", chat_id=cid, last_msg_id=str(latest))
+                        await db.commit()
+                        committed = inserted
+                        pending = 0
+                        await emit(int(95 * i / max(1, len(dialogs))), f"{name}：已保存 {committed} 条")
+                await update_sync_state(db, platform="telegram", chat_id=cid, last_msg_id=str(latest))
+                await db.commit()
+                await record_result(result, cid, name, "done", inserted, on_result=on_result)
+            except asyncio.CancelledError:
+                await db.rollback()
+                await record_result(result, cid, name, "pending", committed, error="Cancelled", on_result=on_result)
+                raise
+            except Exception as e:
+                await db.rollback()
+                await record_result(result, cid, name, "failed", committed, error=error_reason(e), on_result=on_result)
+                if isinstance(e, errors.FloodWaitError):
+                    result["retry_after"] = e.seconds
+                    for _, remaining_id, _, remaining_name in dialogs[i + 1:]:
+                        await record_result(result, remaining_id, remaining_name, "pending", error="FloodWait", on_result=on_result)
+                    break
+    return result

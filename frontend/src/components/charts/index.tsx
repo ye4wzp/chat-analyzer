@@ -232,9 +232,9 @@ export function RankList<T>({ items, getLabel, getSub, getValue, getColor, onCli
           >
             <span className={`text-xs font-semibold tabular-nums ${idx < 3 ? "text-[var(--color-primary)]" : "text-[var(--color-muted-foreground)]"}`}>{idx + 1}</span>
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="truncate text-sm">{getLabel(item)}</span>
-                {getSub && <span className="shrink-0 text-[11px] text-[var(--color-muted-foreground)]">{getSub(item)}</span>}
+              <div className="flex flex-wrap items-baseline gap-x-2">
+                <span className="min-w-0 break-words text-sm font-medium">{getLabel(item)}</span>
+                {getSub && <span className="shrink-0 text-xs text-[var(--color-muted-foreground)]">{getSub(item)}</span>}
               </div>
               <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--color-secondary)]">
                 <div className="h-full rounded-full" style={{ width: `${Math.max(2, v / peak * 100)}%`, background: getColor ? getColor(item) : "var(--color-primary)" }} />
@@ -338,7 +338,7 @@ export function CalendarHeatmap({ year, days, onSelectDay, selected }: {
           </rect>
         )))}
       </svg>
-      <div className="mt-2 flex items-center justify-end gap-1.5 text-[11px] text-[var(--color-muted-foreground)]">
+      <div className="mt-2 flex items-center justify-end gap-1.5 text-xs text-[var(--color-muted-foreground)]">
         少
         {[0, 0.15, 0.4, 0.7, 1].map(t => (
           <span key={t} className="inline-block h-3 w-3 rounded-sm" style={{ background: t === 0 ? "var(--color-secondary)" : heatColor(Math.round(Math.expm1(t * Math.log1p(Math.max(max, 1)))), max) }} />

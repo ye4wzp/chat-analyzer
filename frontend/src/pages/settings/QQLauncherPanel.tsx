@@ -220,7 +220,7 @@ export function QQLauncherPanel({ onConfigChange }: Props) {
             onClick={() => setShowLogs(false)}
             className="absolute top-1 right-2 text-xs text-gray-400 hover:text-white"
           >关闭</button>
-          <pre className="text-[10px] leading-relaxed font-mono whitespace-pre-wrap max-h-72 overflow-auto">
+          <pre className="text-xs leading-relaxed font-mono whitespace-pre-wrap max-h-72 overflow-auto">
             {logs || "(无日志)"}
           </pre>
         </div>
@@ -244,7 +244,7 @@ function Badge({ children, variant }: {
     error: "bg-[var(--color-destructive)]/15 text-[var(--color-destructive)]",
     idle: "bg-[var(--color-muted)] text-[var(--color-muted-foreground)]",
   }[variant]
-  return <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${styles}`}>{children}</span>
+  return <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${styles}`}>{children}</span>
 }
 
 function Alert({ children, kind, icon }: {
