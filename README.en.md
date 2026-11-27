@@ -2,9 +2,14 @@
 
 [中文](README.md) · **English**
 
+![Local-First](https://img.shields.io/badge/Local--First-SQLite-0EA5E9?style=flat-square)
+![Backend](https://img.shields.io/badge/Backend-Python%20%2B%20FastAPI-10B981?style=flat-square)
+![Frontend](https://img.shields.io/badge/Frontend-React%20%2B%20TypeScript-6366F1?style=flat-square)
+[![License: MIT](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](LICENSE)
+
 > A local-first tool that aggregates your WeChat / QQ / Telegram chat history into one SQLite database and uses an LLM to extract knowledge, tag contacts, and surface to-dos — entirely on your machine. The AI only suggests; you decide.
 
-![Dashboard](docs/screenshots/dashboard-dark.png)
+<p align="center"><img src="docs/media/hero-cover.png" alt="Chat Analyzer — Local-First AI" width="860"></p>
 
 ---
 
